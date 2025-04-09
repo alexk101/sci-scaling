@@ -1,0 +1,6 @@
+*__pycache__
+wandb/
+checkpoints/
+data/
+logs/
+.torch_extensions

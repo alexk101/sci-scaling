@@ -1,0 +1,358 @@
+# Base configuration
+base: &base
+  model: &base_model
+    # Model architecture parameters
+    embed_dim: 768
+    num_layers: 12
+    num_heads: 12
+    qkv_bias: true
+    dropout: 0.1
+    attention_dropout: 0.1
+    stochastic_depth: 0.1
+    use_flash_attention: true
+    img_size: [64, 128]
+    patch_size: 8
+    input_channels: 20
+    output_channels: 20
+    use_checkpointing: false
+    mixed_precision: "bf16"
+  
+  training: &base_training
+    # Training parameters
+    batch_size: 32
+    learning_rate: 1e-4
+    weight_decay: 0.01
+    warmup_steps: 1000
+    epochs: 100
+    gradient_clipping: 1.0
+    num_workers: 4
+    save_every: 1
+    data_dir: "data"
+    checkpoint_dir: "checkpoints"
+    log_dir: "logs"
+    flops_budget: 1e18
+    time_budget_hours: 24
+    train_data_path: "/lustre/orion/geo163/proj-shared/downsampled_data/train"
+    valid_data_path: "/lustre/orion/geo163/proj-shared/downsampled_data/valid"
+    test_data_path: "/lustre/orion/geo163/proj-shared/downsampled_data/test"
+    means_path: "/lustre/orion/geo163/proj-shared/downsampled_data/stats/global_means.npy"
+    stds_path: "/lustre/orion/geo163/proj-shared/downsampled_data/stats/global_stds.npy"
+    normalize: true
+    data_subset: 1.0
+    temporal_coverage: "1y"
+    log_frequency: 10
+    save_frequency: 10
+    max_checkpoints: 3
+    use_wandb: true
+    wandb_project: "weather-transformer"
+    logging_backend: "tensorboard"
+    sequence_length: 4
+    temporal_resolution: "6h"
+    dt: 1
+  
+  experiment: &base_experiment
+    name: "weather_transformer"
+    description: "Weather Transformer model for weather prediction"
+    num_gpus: 8
+    num_nodes: 1
+    memory_optimization_level: 1
+    deepspeed_config: "config/ds_config.yaml"
+
+# Local development/testing configuration with smaller model
+local: &local
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 128
+    num_layers: 4
+    num_heads: 4
+    img_size: [64, 128]
+  
+  training:
+    <<: *base_training
+    batch_size: 4
+    epochs: 50
+    train_data_path: "data/train"
+    valid_data_path: "data/valid"
+    test_data_path: "data/test"
+    log_frequency: 10
+  
+  experiment:
+    <<: *base_experiment
+    name: "local_test"
+    description: "Local testing configuration"
+
+
+# Configuration optimized for CUDA GPUs with RTX
+cuda_optimized: &cuda_optimized
+  <<: *base
+  model:
+    <<: *base_model
+    # Enable memory optimizations
+    use_flash_attention: true
+    use_checkpointing: true
+    mixed_precision: "bf16"
+    allow_tf32: true
+  
+  training:
+    <<: *base_training
+    # Increase batch size
+    batch_size: 64
+    learning_rate: 2e-4  # Scale with batch size
+
+
+# Configuration optimized for MPS (Apple Silicon)
+mps_optimized: &mps_optimized
+  <<: *base
+  model:
+    <<: *base_model
+    # MPS works best with 32-bit precision
+    mixed_precision: "32-true"
+  
+  training:
+    <<: *base_training
+    # Smaller batch size for MPS
+    batch_size: 2
+    epochs: 50
+    train_data_path: "data/train"
+    valid_data_path: "data/valid"
+    test_data_path: "data/test"
+    log_frequency: 10
+    num_workers: 0
+
+
+# Batch size scaling configurations
+bs16: &bs16
+  <<: *cuda_optimized
+  training:
+    <<: *base_training
+    batch_size: 16
+    learning_rate: 5e-5
+
+bs32: &bs32
+  <<: *cuda_optimized
+  training:
+    <<: *base_training
+    batch_size: 32
+    learning_rate: 1e-4
+
+bs64: &bs64
+  <<: *cuda_optimized
+  training:
+    <<: *base_training
+    batch_size: 64
+    learning_rate: 2e-4
+
+bs128: &bs128
+  <<: *cuda_optimized
+  training:
+    <<: *base_training
+    batch_size: 128
+    learning_rate: 4e-4
+
+
+# Model size scaling configurations
+small: &small
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 128
+    num_layers: 4
+    num_heads: 4
+  
+  experiment:
+    <<: *base_experiment
+    name: "small_model"
+    description: "Small model configuration (4 layers)"
+
+medium: &medium
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 384
+    num_layers: 12
+    num_heads: 8
+  
+  experiment:
+    <<: *base_experiment
+    name: "medium_model"
+    description: "Medium model configuration (12 layers)"
+
+large: &large
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 768
+    num_layers: 24
+    num_heads: 16
+    use_checkpointing: true
+  
+  training:
+    <<: *base_training
+    batch_size: 16
+  
+  experiment:
+    <<: *base_experiment
+    name: "large_model"
+    description: "Large model configuration (24 layers)"
+
+
+# Sequence length scaling configurations
+seq4: &seq4
+  <<: *base
+  training:
+    <<: *base_training
+    sequence_length: 4
+  
+  experiment:
+    <<: *base_experiment
+    name: "seq4_model"
+    description: "4 time step sequence length"
+
+seq8: &seq8
+  <<: *base
+  training:
+    <<: *base_training
+    sequence_length: 8
+  
+  experiment:
+    <<: *base_experiment
+    name: "seq8_model"
+    description: "8 time step sequence length"
+
+seq16: &seq16
+  <<: *base
+  training:
+    <<: *base_training
+    sequence_length: 16
+    batch_size: 16  # Reduce batch size for longer sequences
+  
+  experiment:
+    <<: *base_experiment
+    name: "seq16_model"
+    description: "16 time step sequence length"
+
+
+# Resolution scaling configurations
+res_1x: &res_1x
+  <<: *base
+  model:
+    <<: *base_model
+    img_size: [360, 720]
+  
+  experiment:
+    <<: *base_experiment
+    name: "res_1x_model"
+    description: "Standard resolution (360x720)"
+
+res_2x: &res_2x
+  <<: *base
+  model:
+    <<: *base_model
+    img_size: [720, 1440]
+  
+  training:
+    <<: *base_training
+    batch_size: 16  # Reduce batch size for higher resolution
+  
+  experiment:
+    <<: *base_experiment
+    name: "res_2x_model"
+    description: "2x resolution (720x1440)"
+
+
+# Example of combined configurations
+large_model_high_res:
+  <<: *large
+  <<: *res_2x
+  model:
+    <<: *base_model
+    img_size: [720, 1440]
+  
+  training:
+    <<: *base_training
+    batch_size: 8  # Reduce even further for this combination
+    max_checkpoints: 2  # Keep fewer checkpoints due to size
+  
+  experiment:
+    <<: *base_experiment
+    name: "large_high_res"
+    description: "Large model with high resolution"
+
+# Test configuration for time-based budget
+time_test:
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 128
+    num_layers: 4
+    num_heads: 4
+    patch_size: 16
+    use_flash_attention: true
+  
+  training:
+    <<: *base_training
+    batch_size: 8
+    epochs: 50  # This will be overridden by time budget
+    time_budget_hours: 0.5  # Train for 30 minutes
+    learning_rate: 1e-4
+    weight_decay: 0.01
+    save_frequency: 5
+    val_frequency: 1
+  
+  experiment:
+    <<: *base_experiment
+    name: "time_test"
+    description: "Configuration for testing time-based budget"
+
+# Test configuration for FLOPs-based budget
+flops_test:
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 128
+    num_layers: 4
+    num_heads: 4
+    patch_size: 16
+    use_flash_attention: true
+  
+  training:
+    <<: *base_training
+    batch_size: 8
+    epochs: 50  # This will be overridden by FLOPs budget
+    flops_budget: 1e20  # Scientific notation for FLOPs budget
+    learning_rate: 1e-4
+    weight_decay: 0.01
+    save_frequency: 5
+    val_frequency: 1
+  
+  experiment:
+    <<: *base_experiment
+    name: "flops_test"
+    description: "Configuration for testing FLOPs-based budget"
+
+# Scaling test with time budget
+scaling_tiny_time:
+  <<: *base
+  model:
+    <<: *base_model
+    embed_dim: 64
+    num_layers: 2
+    num_heads: 2
+    patch_size: 16
+    use_flash_attention: true
+  
+  training:
+    <<: *base_training
+    batch_size: 8
+    epochs: 10  # This will be overridden by time budget
+    time_budget_hours: 0.25  # Train for 15 minutes
+    learning_rate: 1e-4
+    weight_decay: 0.01
+    save_frequency: 1
+    val_frequency: 1
+  
+  experiment:
+    <<: *base_experiment
+    name: "scaling_tiny_time"
+    description: "Tiny model for quick scaling tests with time budget" 
