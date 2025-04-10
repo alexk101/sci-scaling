@@ -54,7 +54,7 @@ mkdir -p $NCCL_TEMP_DIR
 export NCCL_NET_GDR_LEVEL=3
 export FI_CXI_ATS=0
 export MACHINE=frontier
-export ROCM_SMI_PATH="/opt/rocm-${ROCM_VERSION}/libexec/rocm-smi"
+export ROCM_SMI_PATH="/opt/rocm-${ROCM_VERSION}/libexec/rocm-smi/"
 
 # Get the hostname of the master node for distributed training
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
