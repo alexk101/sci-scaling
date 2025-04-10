@@ -198,8 +198,7 @@ class WeatherTrainer:
                 normalize=self.config.training.normalize,
                 means_path=self.config.training.means_path,
                 stds_path=self.config.training.stds_path,
-                train=True,
-                prefetch_size=2
+                train=True
             ),
             batch_size=self.config.training.batch_size,
             shuffle=True,
@@ -217,8 +216,7 @@ class WeatherTrainer:
                 normalize=self.config.training.normalize,
                 means_path=self.config.training.means_path,
                 stds_path=self.config.training.stds_path,
-                train=False,
-                prefetch_size=2
+                train=False
             ),
             batch_size=self.config.training.batch_size,
             shuffle=False,

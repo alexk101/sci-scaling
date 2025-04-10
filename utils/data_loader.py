@@ -6,12 +6,10 @@ import h5py
 from torch.utils.data import Dataset, DataLoader
 from typing import Optional, Tuple
 from pathlib import Path
-import queue
-import threading
 
 
 class WeatherDataset(Dataset):
-    """Dataset for weather data with prefetching support.
+    """Dataset for weather data.
 
     Args:
         data_path: Path to data directory
@@ -24,7 +22,6 @@ class WeatherDataset(Dataset):
         stds_path: Path to pre-computed standard deviations (required if normalize=True)
         limit_samples: Optional limit on number of samples
         train: Whether this is training data
-        prefetch_size: Number of files to prefetch
     """
 
     def __init__(
@@ -39,7 +36,6 @@ class WeatherDataset(Dataset):
         stds_path: Optional[str] = None,
         limit_samples: Optional[int] = None,
         train: bool = True,
-        prefetch_size: int = 2,
     ):
         self.data_path = Path(data_path)
         self.dt = dt
@@ -48,9 +44,6 @@ class WeatherDataset(Dataset):
         self.output_channels = output_channels
         self.normalize = normalize
         self.train = train
-        self.prefetch_size = prefetch_size
-        self.prefetch_thread = None  # Initialize prefetch_thread to None
-        self.prefetch_queue = queue.Queue(maxsize=prefetch_size)
 
         # Load normalization stats
         if normalize:
@@ -99,15 +92,9 @@ class WeatherDataset(Dataset):
         self.file_handles = [None] * len(self.files)
         self.datasets = [None] * len(self.files)
         
-        # Start the prefetching thread
-        self._start_prefetch()
-        
         # Preload the first file
         if len(self.files) > 0:
             self._load_file(0)
-            # Queue the next file for prefetching if there are more files
-            if len(self.files) > 1:
-                self.prefetch_queue.put(1)
 
         logging.info(f"Initialized dataset with {self.total_samples} samples")
 
@@ -133,32 +120,6 @@ class WeatherDataset(Dataset):
         except Exception as e:
             logging.error(f"Error loading file {self.files[file_idx]}: {e}")
             raise
-
-    def _prefetch_worker(self):
-        """Worker thread for prefetching files."""
-        while True:
-            try:
-                file_idx = self.prefetch_queue.get()
-                if file_idx is None:  # Poison pill
-                    break
-                self._load_file(file_idx)
-            except Exception as e:
-                logging.error(f"Error in prefetch worker: {e}")
-            finally:
-                self.prefetch_queue.task_done()
-
-    def _start_prefetch(self):
-        """Start the prefetch worker thread."""
-        if self.prefetch_thread is None or not self.prefetch_thread.is_alive():
-            self.prefetch_thread = threading.Thread(target=self._prefetch_worker)
-            self.prefetch_thread.daemon = True
-            self.prefetch_thread.start()
-
-    def _stop_prefetch(self):
-        """Stop the prefetch worker thread."""
-        if self.prefetch_thread is not None and self.prefetch_thread.is_alive():
-            self.prefetch_queue.put(None)  # Poison pill
-            self.prefetch_thread.join()
 
     def __len__(self) -> int:
         return self.total_samples
@@ -213,11 +174,6 @@ class WeatherDataset(Dataset):
         input_tensor = self._normalize(input_tensor)
         target_tensor = self._normalize(target_tensor)
 
-        # Prefetch next file if needed
-        next_file_idx = (file_idx + 1) % len(self.files)
-        if self.prefetch_queue.qsize() < self.prefetch_size:
-            self.prefetch_queue.put(next_file_idx)
-
         return input_tensor, target_tensor
 
     def __del__(self):
@@ -227,9 +183,5 @@ class WeatherDataset(Dataset):
             for handle in self.file_handles:
                 if handle is not None:
                     handle.close()
-            
-            # Stop the prefetch thread if it exists
-            if hasattr(self, 'prefetch_thread') and self.prefetch_thread is not None:
-                self._stop_prefetch()
         except Exception as e:
             logging.error(f"Error in dataset cleanup: {e}")
