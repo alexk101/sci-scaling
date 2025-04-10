@@ -156,6 +156,14 @@ class WeatherDataset(Dataset):
             with h5py.File(self.files[0], "r") as f:
                 self.samples_per_file = f["fields"].shape[0]
                 self.total_samples = len(self.files) * self.samples_per_file
+                
+                # Check if image size is smaller than data dimensions (cropping)
+                full_height, full_width = f["fields"].shape[2:4]
+                requested_height, requested_width = self.img_size
+                
+                if requested_height < full_height or requested_width < full_width:
+                    logging.info(f"Cropping data: requested size {requested_height}x{requested_width} is smaller than "
+                                f"actual data dimensions {full_height}x{full_width}")
         except Exception as e:
             logging.error(f"Error reading dataset statistics: {e}")
             raise
