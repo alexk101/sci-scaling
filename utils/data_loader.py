@@ -3,9 +3,85 @@ import glob
 import torch
 import numpy as np
 import h5py
-from torch.utils.data import Dataset
-from typing import Optional, Tuple
+from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
+from typing import Optional, Tuple, Dict, Any, Union, List
 from pathlib import Path
+
+
+def worker_init_fn(worker_id):
+    """Initialize worker with unique seed."""
+    np.random.seed(torch.utils.data.get_worker_info().seed % (2**32 - 1))
+
+
+def get_data_loader(
+    dataset: Dataset,
+    batch_size: int,
+    num_workers: int,
+    distributed: bool = False,
+    train: bool = True,
+    world_size: Optional[int] = None,
+    rank: Optional[int] = None,
+    data_parallel_shards: Optional[int] = None,
+    data_parallel_shard_id: Optional[int] = None,
+    drop_last: bool = True,
+) -> Tuple[DataLoader, Optional[DistributedSampler]]:
+    """
+    Create a DataLoader with appropriate sampler for distributed training.
+    
+    Args:
+        dataset: The dataset to load
+        batch_size: Batch size for each process
+        num_workers: Number of workers for data loading
+        distributed: Whether to use distributed training
+        train: Whether this is for training (affects shuffling)
+        world_size: Total number of processes (for custom distribution)
+        rank: Current process rank (for custom distribution)
+        data_parallel_shards: Number of data-parallel shards for model parallelism
+        data_parallel_shard_id: Current data-parallel shard ID
+        drop_last: Whether to drop the last incomplete batch
+        
+    Returns:
+        Tuple of (dataloader, sampler). Sampler is returned to allow for epoch-based reshuffling.
+    """
+    sampler = None
+    
+    if distributed:
+        # For model parallelism scenarios
+        if data_parallel_shards is not None and data_parallel_shard_id is not None:
+            sampler = DistributedSampler(
+                dataset,
+                num_replicas=data_parallel_shards,
+                rank=data_parallel_shard_id,
+                shuffle=train
+            )
+        # For standard distributed training
+        else:
+            # Custom world_size and rank can be provided
+            kwargs = {}
+            if world_size is not None:
+                kwargs['num_replicas'] = world_size
+            if rank is not None:
+                kwargs['rank'] = rank
+                
+            sampler = DistributedSampler(
+                dataset,
+                shuffle=train,
+                **kwargs
+            )
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=(sampler is None and train),  # Only shuffle if no sampler and in training mode
+        sampler=sampler,
+        worker_init_fn=worker_init_fn,
+        drop_last=drop_last,
+        pin_memory=torch.cuda.is_available()
+    )
+    
+    return dataloader, sampler
 
 
 class WeatherDataset(Dataset):

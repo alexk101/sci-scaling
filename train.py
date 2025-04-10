@@ -41,7 +41,7 @@ import matplotlib
 matplotlib.use('Agg')
 
 from models.weather_transformer import WeatherTransformer, FLASH_ATTN_AVAILABLE
-from utils.data_loader import WeatherDataset
+from utils.data_loader import WeatherDataset, get_data_loader
 from utils.loss import l2_loss_opt
 from utils.metrics import MetricsTracker, compute_metrics
 from utils.logging import (
@@ -187,41 +187,55 @@ class WeatherTrainer:
         else:
             self.scheduler = None
         
-        # Set up data loaders with all dataset parameters
-        self.train_loader = DataLoader(
-            WeatherDataset(
-                data_path=self.config.training.train_data_path,
-                dt=self.config.training.dt,
-                img_size=self.config.model.img_size,
-                input_channels=self.config.model.input_channels,
-                output_channels=self.config.model.output_channels,
-                normalize=self.config.training.normalize,
-                means_path=self.config.training.means_path,
-                stds_path=self.config.training.stds_path,
-                train=True
-            ),
-            batch_size=self.config.training.batch_size,
-            shuffle=True,
-            num_workers=self.config.training.num_workers,
-            pin_memory=True
+        # Create datasets
+        train_dataset = WeatherDataset(
+            data_path=self.config.training.train_data_path,
+            dt=self.config.training.dt,
+            img_size=self.config.model.img_size,
+            input_channels=self.config.model.input_channels,
+            output_channels=self.config.model.output_channels,
+            normalize=self.config.training.normalize,
+            means_path=self.config.training.means_path,
+            stds_path=self.config.training.stds_path,
+            train=True
         )
         
-        self.val_loader = DataLoader(
-            WeatherDataset(
-                data_path=self.config.training.valid_data_path,
-                dt=self.config.training.dt,
-                img_size=self.config.model.img_size,
-                input_channels=self.config.model.input_channels,
-                output_channels=self.config.model.output_channels,
-                normalize=self.config.training.normalize,
-                means_path=self.config.training.means_path,
-                stds_path=self.config.training.stds_path,
-                train=False
-            ),
+        val_dataset = WeatherDataset(
+            data_path=self.config.training.valid_data_path,
+            dt=self.config.training.dt,
+            img_size=self.config.model.img_size,
+            input_channels=self.config.model.input_channels,
+            output_channels=self.config.model.output_channels,
+            normalize=self.config.training.normalize,
+            means_path=self.config.training.means_path,
+            stds_path=self.config.training.stds_path,
+            train=False
+        )
+        
+        # Determine if we're using distributed training
+        using_distributed = (
+            self.strategy == "deepspeed" or
+            self.strategy == "ddp" or
+            (isinstance(self.strategy, str) and "ddp" in self.strategy)
+        )
+        
+        # Set up data loaders with appropriate sampling for distributed training
+        self.train_loader, self.train_sampler = get_data_loader(
+            dataset=train_dataset,
             batch_size=self.config.training.batch_size,
-            shuffle=False,
             num_workers=self.config.training.num_workers,
-            pin_memory=True
+            distributed=using_distributed,
+            train=True,
+            drop_last=True
+        )
+        
+        self.val_loader, self.val_sampler = get_data_loader(
+            dataset=val_dataset,
+            batch_size=self.config.training.batch_size,
+            num_workers=self.config.training.num_workers,
+            distributed=using_distributed,
+            train=False,
+            drop_last=False
         )
         
         # Convert precision to Fabric format
@@ -447,6 +461,11 @@ class WeatherTrainer:
         
         # Log epoch start
         logging.info(f"Starting epoch {epoch+1}/{self.config.training.epochs}")
+        
+        # Set epoch for DistributedSampler to ensure proper shuffling
+        if hasattr(self, 'train_sampler') and self.train_sampler is not None:
+            self.train_sampler.set_epoch(epoch)
+            logging.info(f"Set epoch {epoch} in DistributedSampler for proper shuffling")
         
         # Only show progress bar on rank 0, but redirect logging for all ranks
         should_display_pbar = self.fabric.is_global_zero
