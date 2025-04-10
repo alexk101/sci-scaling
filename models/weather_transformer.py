@@ -328,8 +328,9 @@ class WeatherTransformer(nn.Module):
         )
 
         # Output head
+        self.out_size = out_channels * patch_size * patch_size
         self.norm = CustomNormalization(embed_dim, normalization_type)
-        self.head = nn.Linear(embed_dim, out_channels)
+        self.head = nn.Linear(embed_dim, self.out_size, bias=False)
 
         # Initialize weights
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -342,6 +343,11 @@ class WeatherTransformer(nn.Module):
         # Enable flash attention if requested
         if use_flash_attention:
             self._enable_flash_attention()
+
+        # Store grid dimensions for reshaping during inference
+        self.patch_h = img_size[0] // patch_size
+        self.patch_w = img_size[1] // patch_size
+        self.out_channels = out_channels
 
     def _init_weights(self, m):
         """Initialize weights."""
@@ -369,6 +375,37 @@ class WeatherTransformer(nn.Module):
         for block in self.blocks:
             block.enable_checkpointing()
 
+    def forward_head(self, x: torch.Tensor, original_shape: Tuple[int, int, int, int]) -> torch.Tensor:
+        """Forward head using the reshape approach.
+        
+        Args:
+            x: Input tensor of shape [B, N, embed_dim]
+            original_shape: Original input shape (B, C, H, W)
+            
+        Returns:
+            Tensor of shape [B, out_channels, H, W]
+        """
+        B, _, _ = x.shape  # B x N x embed_dim
+
+        # Reshape to [B, h, w, embed_dim]
+        x = x.reshape(B, self.patch_h, self.patch_w, self.embed_dim)
+        
+        # Apply head (linear projection)
+        x = self.head(x)  # [B, h, w, out_channels*patch_size*patch_size]
+        
+        # Reshape to unfold the patches
+        patch_size = self.patch_embed.patch_size
+        x = x.reshape(B, self.patch_h, self.patch_w, patch_size, patch_size, self.out_channels)
+        
+        # Rearrange dimensions using einsum for efficiency
+        x = torch.einsum("nhwpqc->nchpwq", x)
+        
+        # Final reshape to output dimensions [B, C, H, W]
+        output_H = self.patch_h * patch_size
+        output_W = self.patch_w * patch_size
+        x = x.reshape(B, self.out_channels, output_H, output_W)
+        return x
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
 
@@ -379,7 +416,7 @@ class WeatherTransformer(nn.Module):
             Tensor of shape [B, out_channels, H, W]
         """
         # Store original spatial dimensions
-        B, C_in, H, W = x.shape
+        original_shape = x.shape
         
         # Patch embedding
         x = self.patch_embed(x)
@@ -394,18 +431,9 @@ class WeatherTransformer(nn.Module):
 
         # Output head
         x = self.norm(x)
-        x = self.head(x)
-
-        # Reshape to match output dimensions
-        B, N, C = x.shape
-        H_out, W_out = self.patch_embed.img_size
-        patch_size = self.patch_embed.patch_size
         
-        # Reshape to [B, C, H//patch_size, W//patch_size]
-        x = x.transpose(1, 2).reshape(B, C, H_out // patch_size, W_out // patch_size)
-        
-        # Upsample back to original dimensions
-        x = F.interpolate(x, size=(H, W), mode='bilinear', align_corners=False)
+        # Use the new reshaping approach
+        x = self.forward_head(x, original_shape)
 
         # Quantize output if requested
         if self.use_quantization:
