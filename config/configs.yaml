@@ -15,7 +15,8 @@ base: &base
     input_channels: 20
     output_channels: 20
     use_checkpointing: false
-    mixed_precision: "bf16"
+    mixed_precision: "bf16-mixed"
+    allow_tf32: true
   
   training: &base_training
     # Training parameters
@@ -91,7 +92,7 @@ cuda_optimized: &cuda_optimized
     # Enable memory optimizations
     use_flash_attention: true
     use_checkpointing: true
-    mixed_precision: "bf16"
+    mixed_precision: "bf16-mixed"
     allow_tf32: true
   
   training:
