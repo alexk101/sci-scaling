@@ -434,6 +434,7 @@ class WeatherTrainer:
             logging.info(f"Finished epoch {epoch+1}, Avg Loss: {train_loss.avg:.6f}")
             
             # Validation phase
+            logging.info(f"Starting validation")
             self._validate_epoch(epoch)
             
             # Save checkpoint if needed
