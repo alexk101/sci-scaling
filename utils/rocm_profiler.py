@@ -20,7 +20,7 @@ class RocmProfiler:
 
         Returns:
             Dict[str, Any]: A dictionary containing the power usage of the given GPU with the following keys:
-                "power": float,
+                "power": str,
                 "power_type": str,
                 "unit": str,
                 "ret": int

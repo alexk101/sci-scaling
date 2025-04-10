@@ -171,7 +171,7 @@ class MetricsTracker:
         elif self.gpu_type == "amd" and hasattr(self, 'rocm_profiler') and self.rocm_profiler:
             metrics["gpu_utilization"] = self.rocm_profiler.getUtilization(0)
             metrics["gpu_temperature"] = self.rocm_profiler.getTemp(0)[1]
-            metrics["gpu_power_usage"] = self.rocm_profiler.getPower(0)['power']
+            metrics["gpu_power_usage"] = float(self.rocm_profiler.getPower(0)['power'])
         
         # For MPS (Apple Silicon), we unfortunately don't have access to detailed metrics
         # through Python APIs yet
