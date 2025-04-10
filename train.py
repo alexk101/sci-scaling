@@ -261,6 +261,7 @@ class WeatherTrainer:
         
         # Launch fabric before setting up model
         self.fabric.launch()
+        logging.info(f"Fabric launched successfully")
         
         # Now that Fabric is initialized and distributed environment is set up, create the logger
         self.metrics_logger = Logger(
@@ -270,6 +271,7 @@ class WeatherTrainer:
             project_name=self.config.training.wandb_project if self.config.training.use_wandb else "weather-transformer"
         )
         
+        logging.info(f"Logger created")
         # Determine if we're using distributed training
         using_distributed = (
             self.strategy == "deepspeed" or
@@ -277,6 +279,8 @@ class WeatherTrainer:
             (isinstance(self.strategy, str) and "ddp" in self.strategy)
         )
         
+        logging.info(f"Using distributed: {using_distributed}")
+        logging.info(f'Initializing training data loader')
         # Set up data loaders with appropriate sampling for distributed training - AFTER Fabric is launched
         self.train_loader, self.train_sampler = get_data_loader(
             dataset=train_dataset,
@@ -289,6 +293,7 @@ class WeatherTrainer:
             rank=self.fabric.global_rank if using_distributed else None
         )
         
+        logging.info(f'Initializing validation data loader')
         self.val_loader, self.val_sampler = get_data_loader(
             dataset=val_dataset,
             batch_size=self.config.training.batch_size,
@@ -299,12 +304,18 @@ class WeatherTrainer:
             world_size=self.fabric.world_size if using_distributed else None,
             rank=self.fabric.global_rank if using_distributed else None
         )
+        logging.info(f'Data loaders initialized')
         
         # Set up model, optimizer, and data loaders with fabric
+        logging.info(f'Setting up model, optimizer, and data loaders with fabric')
         self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
+        logging.info(f'Model, optimizer, and data loaders set up with fabric')
+
+        logging.info(f'Setting up train and val data loaders with fabric')
         self.train_loader, self.val_loader = self.fabric.setup_dataloaders(
             self.train_loader, self.val_loader
         )
+        logging.info(f'Train and val data loaders set up with fabric')
         
         # Load checkpoint if provided
         if resume_from_checkpoint:
