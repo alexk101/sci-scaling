@@ -172,6 +172,8 @@ class MetricsTracker:
             metrics["gpu_utilization"] = self.rocm_profiler.getUtilization(0)
             metrics["gpu_temperature"] = self.rocm_profiler.getTemp(0)
             metrics["gpu_power_usage"] = self.rocm_profiler.getPower(0)
+            import json
+            logging.info(f"GPU metrics: {json.dumps(metrics, indent=4)}")
         
         # For MPS (Apple Silicon), we unfortunately don't have access to detailed metrics
         # through Python APIs yet
