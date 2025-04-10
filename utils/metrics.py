@@ -84,8 +84,8 @@ class MetricsTracker:
         # Initialize specialized metrics tracking based on GPU type
         if self.gpu_type == "amd":
             try:
-                import rocm_profiler
-                self.rocm_profiler = rocm_profiler.RocmProfiler()
+                from utils.rocm_profiler import RocmProfiler
+                self.rocm_profiler = RocmProfiler()
                 logging.info("Initialized ROCm metrics tracking")
             except ImportError as e:
                 self.rocm_profiler = None
