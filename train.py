@@ -326,8 +326,8 @@ class WeatherTrainer:
                 if 'optimizer_state_dict' in checkpoint:
                     self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 
-                # Load scheduler state if available
-                if 'scheduler_state_dict' in checkpoint:
+                # Load scheduler state if available and scheduler exists
+                if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
                     self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 
                 logging.info(f"Successfully loaded universal checkpoint from {checkpoint_path}")
@@ -352,8 +352,8 @@ class WeatherTrainer:
                 if 'optimizer_state_dict' in checkpoint:
                     self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                 
-                # Load scheduler state if available
-                if 'scheduler_state_dict' in checkpoint:
+                # Load scheduler state if available and scheduler exists
+                if 'scheduler_state_dict' in checkpoint and self.scheduler is not None:
                     self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
                 
                 # Update the starting epoch if available
@@ -765,9 +765,13 @@ class WeatherTrainer:
             'model': self.model,  # Include the model itself for DeepSpeed strategy
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'config': asdict(self.config)
         }
+        
+        # Only add scheduler state if scheduler exists
+        if self.scheduler is not None:
+            checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+            
+        checkpoint['config'] = asdict(self.config)
         
         # Save to the checkpoints directory within the run directory
         checkpoint_dir = Path(self.config.training.log_dir) / "checkpoints"

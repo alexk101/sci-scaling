@@ -3,7 +3,7 @@ import glob
 import torch
 import numpy as np
 import h5py
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from typing import Optional, Tuple
 from pathlib import Path
 
