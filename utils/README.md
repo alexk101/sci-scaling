@@ -7,7 +7,7 @@ This directory contains utility modules for the Weather Transformer project.
 ### `data_loader.py`
 Handles loading and preprocessing of weather data from HDF5 files:
 - `WeatherDataset`: PyTorch Dataset class for efficient loading of weather data
-- Includes normalization, lazy loading, and prefetching features
+- Includes normalization and lazy loading features
 
 ### `loss.py`
 Custom loss functions for weather prediction:

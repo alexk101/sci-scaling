@@ -96,6 +96,7 @@ cuda_optimized: &cuda_optimized
   
   training:
     <<: *base_training
+    epochs: 50
     # Increase batch size
     batch_size: 64
     learning_rate: 2e-4  # Scale with batch size
