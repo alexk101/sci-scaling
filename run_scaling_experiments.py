@@ -75,7 +75,7 @@ def create_scaled_yaml_config(
         precision_idx = int(scale_factor)
         if precision_idx not in precision_map:
             raise ValueError(f"precision scale factor must be 0, 1, or 2, got {scale_factor}")
-        scaled_config["mixed_precision"] = precision_map[precision_idx]
+        scaled_config["precision"] = precision_map[precision_idx]
         
     elif scale_type == "node":
         scaled_config["num_nodes"] = int(scale_factor)

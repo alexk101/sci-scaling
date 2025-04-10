@@ -233,7 +233,7 @@ class WeatherTransformer(nn.Module):
         use_flash_attention: Whether to use Flash Attention
         use_native_flash_attention: Whether to use PyTorch native Flash Attention
         use_checkpointing: Whether to use gradient checkpointing
-        mixed_precision: Mixed precision training type
+        precision: Precision training type
         use_kv_cache: Whether to use KV cache
         use_quantization: Whether to use quantization
         quantization_bits: Number of quantization bits
@@ -264,7 +264,7 @@ class WeatherTransformer(nn.Module):
         use_flash_attention: bool = True,
         use_native_flash_attention: bool = False,
         use_checkpointing: bool = False,
-        mixed_precision: str = "bf16",
+        precision: str = "bf16",
         use_kv_cache: bool = False,
         use_quantization: bool = False,
         quantization_bits: int = 8,

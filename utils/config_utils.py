@@ -5,10 +5,11 @@ import yaml
 from enum import Enum
 
 class PrecisionType(str, Enum):
-    FP32 = "fp32"
-    FP16 = "fp16"
-    BF16 = "bf16"
-    MIXED = "mixed"
+    FP32 = "32-true"
+    FP16 = "16-true"
+    BF16 = "bf16-true"
+    BF16MIXED = "bf16-mixed"
+    FP16MIXED = "16-mixed"
 
 class LoggingBackend(str, Enum):
     TENSORBOARD = "tensorboard"
@@ -33,7 +34,7 @@ class ModelConfig:
     stochastic_depth: float = 0.1
     use_flash_attention: bool = True
     patch_size: int = 8
-    mixed_precision: PrecisionType = PrecisionType.BF16
+    precision: PrecisionType = PrecisionType.BF16
     use_checkpointing: bool = False
     allow_tf32: bool = False
 

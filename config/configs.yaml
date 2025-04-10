@@ -15,7 +15,7 @@ base: &base
     input_channels: 20
     output_channels: 20
     use_checkpointing: false
-    mixed_precision: "bf16-mixed"
+    precision: "bf16-mixed"
     allow_tf32: true
   
   training: &base_training
@@ -92,7 +92,7 @@ cuda_optimized: &cuda_optimized
     # Enable memory optimizations
     use_flash_attention: true
     use_checkpointing: true
-    mixed_precision: "bf16-mixed"
+    precision: "bf16-mixed"
     allow_tf32: true
   
   training:
@@ -109,7 +109,7 @@ mps_optimized: &mps_optimized
   model:
     <<: *base_model
     # MPS works best with 32-bit precision
-    mixed_precision: "32-true"
+    precision: "32-true"
   
   training:
     <<: *base_training

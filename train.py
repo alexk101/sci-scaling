@@ -183,7 +183,7 @@ class WeatherTrainer:
             'drop_path_rate': self.config.model.stochastic_depth,
             'use_flash_attention': self.config.model.use_flash_attention and FLASH_ATTN_AVAILABLE,
             'use_checkpointing': self.config.model.use_checkpointing,
-            'mixed_precision': self.config.model.mixed_precision
+            'precision': self.config.model.precision
         }
         
         self.model = WeatherTransformer(**model_params)
@@ -229,17 +229,7 @@ class WeatherTrainer:
             stds_path=self.config.training.stds_path,
             train=False
         )
-        
-        # Convert precision to Fabric format
-        if isinstance(self.precision, PrecisionType):
-            if self.precision == PrecisionType.BF16:
-                fabric_precision = "bf16-mixed"
-            elif self.precision == PrecisionType.FP16:
-                fabric_precision = "16-mixed"
-            else:
-                fabric_precision = "32-true"
-        else:
-            fabric_precision = str(self.precision)
+
         
         # Ensure devices is properly set - it can't be None for Fabric
         # Default to using the number of local GPUs if not explicitly set
@@ -253,7 +243,7 @@ class WeatherTrainer:
         # Set up fabric with memory optimization
         self.fabric = Fabric(
             strategy=self.strategy,
-            precision=fabric_precision,
+            precision=self.precision,
             devices=self.devices,
             num_nodes=self.num_nodes,
             loggers=None  # We'll set up our own logger
