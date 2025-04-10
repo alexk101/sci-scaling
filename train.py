@@ -138,6 +138,24 @@ class WeatherTrainer:
         Args:
             resume_from_checkpoint: Path to a checkpoint to resume from
         """
+        # Log environment information
+        if torch.cuda.is_available():
+            logging.info(f"CUDA available: {torch.cuda.is_available()}")
+            logging.info(f"CUDA device count: {torch.cuda.device_count()}")
+            logging.info(f"Current CUDA device: {torch.cuda.current_device()}")
+        
+        # Log distributed environment variables
+        distributed_vars = [
+            "MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE", 
+            "LOCAL_RANK", "NODE_RANK", "SLURM_PROCID", "SLURM_LOCALID",
+            "SLURM_JOB_ID", "SLURM_STEP_ID", "SLURM_NODEID",
+            "SLURM_JOB_NUM_NODES", "SLURM_NTASKS", "SLURM_NTASKS_PER_NODE"
+        ]
+        
+        for var in distributed_vars:
+            if var in os.environ:
+                logging.info(f"{var}: {os.environ[var]}")
+        
         # Apply performance optimizations from config
         if torch.cuda.is_available() and hasattr(self.config.model, 'allow_tf32'):
             # Set TF32 option from config if device supports it
@@ -266,7 +284,9 @@ class WeatherTrainer:
             num_workers=self.config.training.num_workers,
             distributed=using_distributed,
             train=True,
-            drop_last=True
+            drop_last=True,
+            world_size=self.fabric.world_size if using_distributed else None,
+            rank=self.fabric.global_rank if using_distributed else None
         )
         
         self.val_loader, self.val_sampler = get_data_loader(
@@ -275,7 +295,9 @@ class WeatherTrainer:
             num_workers=self.config.training.num_workers,
             distributed=using_distributed,
             train=False,
-            drop_last=False
+            drop_last=False,
+            world_size=self.fabric.world_size if using_distributed else None,
+            rank=self.fabric.global_rank if using_distributed else None
         )
         
         # Set up model, optimizer, and data loaders with fabric
