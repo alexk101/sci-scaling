@@ -212,32 +212,6 @@ class WeatherTrainer:
             train=False
         )
         
-        # Determine if we're using distributed training
-        using_distributed = (
-            self.strategy == "deepspeed" or
-            self.strategy == "ddp" or
-            (isinstance(self.strategy, str) and "ddp" in self.strategy)
-        )
-        
-        # Set up data loaders with appropriate sampling for distributed training
-        self.train_loader, self.train_sampler = get_data_loader(
-            dataset=train_dataset,
-            batch_size=self.config.training.batch_size,
-            num_workers=self.config.training.num_workers,
-            distributed=using_distributed,
-            train=True,
-            drop_last=True
-        )
-        
-        self.val_loader, self.val_sampler = get_data_loader(
-            dataset=val_dataset,
-            batch_size=self.config.training.batch_size,
-            num_workers=self.config.training.num_workers,
-            distributed=using_distributed,
-            train=False,
-            drop_last=False
-        )
-        
         # Convert precision to Fabric format
         if isinstance(self.precision, PrecisionType):
             if self.precision == PrecisionType.BF16:
@@ -276,6 +250,32 @@ class WeatherTrainer:
             config=self.config,
             backend=self.logging_backend,
             project_name=self.config.training.wandb_project if self.config.training.use_wandb else "weather-transformer"
+        )
+        
+        # Determine if we're using distributed training
+        using_distributed = (
+            self.strategy == "deepspeed" or
+            self.strategy == "ddp" or
+            (isinstance(self.strategy, str) and "ddp" in self.strategy)
+        )
+        
+        # Set up data loaders with appropriate sampling for distributed training - AFTER Fabric is launched
+        self.train_loader, self.train_sampler = get_data_loader(
+            dataset=train_dataset,
+            batch_size=self.config.training.batch_size,
+            num_workers=self.config.training.num_workers,
+            distributed=using_distributed,
+            train=True,
+            drop_last=True
+        )
+        
+        self.val_loader, self.val_sampler = get_data_loader(
+            dataset=val_dataset,
+            batch_size=self.config.training.batch_size,
+            num_workers=self.config.training.num_workers,
+            distributed=using_distributed,
+            train=False,
+            drop_last=False
         )
         
         # Set up model, optimizer, and data loaders with fabric
