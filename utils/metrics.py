@@ -87,9 +87,9 @@ class MetricsTracker:
                 import rocm_profiler
                 self.rocm_profiler = rocm_profiler.RocmProfiler()
                 logging.info("Initialized ROCm metrics tracking")
-            except ImportError:
+            except ImportError as e:
                 self.rocm_profiler = None
-                logging.warning("Warning: ROCm profiler not available. Using generic GPU metrics.")
+                logging.warning(f"Warning: ROCm profiler not available. {e}")
         
         elif self.gpu_type == "nvidia":
             try:

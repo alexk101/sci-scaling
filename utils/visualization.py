@@ -266,4 +266,45 @@ def create_synthetic_sequence(sample, seq_length):
         scale = 0.8 + 0.4 * (t / max(1, seq_length - 1))
         seq[t] = sample[0] * scale
     
-    return seq 
+    return seq
+
+def create_spatial_rmse_map(y_pred, y_true, channel_idx=None, epoch=0, rmse_max=None):
+    """Create a spatial RMSE error map visualization.
+    
+    Args:
+        y_pred: Model prediction tensor [batch, channels, height, width]
+        y_true: Ground truth tensor [batch, channels, height, width]
+        channel_idx: Index of the channel to visualize. If None, compute RMSE across all channels.
+        epoch: Current epoch number for title
+        rmse_max: Optional maximum value for error colorscale (if None, will be computed from data)
+        
+    Returns:
+        fig: Matplotlib figure object
+    """
+    # Ensure tensors are on CPU before computing error
+    y_pred_cpu = y_pred.cpu() if hasattr(y_pred, 'cpu') else y_pred
+    y_true_cpu = y_true.cpu() if hasattr(y_true, 'cpu') else y_true
+    
+    # If channel_idx is provided, compute RMSE for that channel only
+    if channel_idx is not None:
+        squared_error = (y_pred_cpu[:, channel_idx] - y_true_cpu[:, channel_idx])**2
+        rmse_map = torch.sqrt(squared_error.mean(dim=0))  # Mean across batch
+        channel_str = f" - Channel {channel_idx}"
+    else:
+        # Compute RMSE across all channels
+        squared_error = (y_pred_cpu - y_true_cpu)**2
+        rmse_map = torch.sqrt(squared_error.mean(dim=(0, 1)))  # Mean across batch and channels
+        channel_str = ""
+    
+    # Use provided rmse_max or compute from data
+    if rmse_max is None:
+        rmse_max = rmse_map.max().item()
+    
+    # Create figure
+    rmse_fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+    im = ax.imshow(rmse_map.numpy(), cmap='hot', vmin=0, vmax=rmse_max)
+    ax.set_title(f'Spatial RMSE Error{channel_str} (Epoch {epoch})')
+    rmse_fig.colorbar(im, ax=ax)
+    ax.grid(True)
+    plt.tight_layout()
+    return rmse_fig 

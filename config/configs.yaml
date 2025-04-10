@@ -41,7 +41,7 @@ base: &base
     normalize: true
     data_subset: 1.0
     temporal_coverage: "1y"
-    log_frequency: 10
+    log_frequency: 1
     save_frequency: 10
     max_checkpoints: 3
     use_wandb: true

@@ -20,7 +20,8 @@ from utils.visualization import (
     create_spatial_error_map,
     create_lat_lon_error_plots,
     create_difference_map,
-    create_synthetic_sequence
+    create_synthetic_sequence,
+    create_spatial_rmse_map
 )
 
 # ------------------------------------------------------------------------
@@ -606,7 +607,12 @@ def log_validation_results(
     vis_y_pred: Optional[torch.Tensor] = None,
     vis_y: Optional[torch.Tensor] = None,
     config: Optional[Config] = None,
-    save_to_disk: bool = True
+    save_to_disk: bool = True,
+    vmin: float = None,
+    vmax: float = None,
+    error_max: float = None,
+    diff_max: float = None,
+    rmse_max: float = None
 ) -> None:
     """Log validation results and visualizations.
     
@@ -621,6 +627,11 @@ def log_validation_results(
         vis_y: Ground truth tensor for visualization
         config: Configuration object
         save_to_disk: Whether to save visualizations to disk
+        vmin: Optional minimum value for the colorbar (for consistent scales)
+        vmax: Optional maximum value for the colorbar (for consistent scales)
+        error_max: Optional maximum error value for error plots (for consistent scales)
+        diff_max: Optional maximum difference value for difference plots (for consistent scales)
+        rmse_max: Optional maximum RMSE value for RMSE plots (for consistent scales)
     """
     # Basic metrics
     logger.log_scalar('val/loss', val_loss, step)
@@ -639,7 +650,19 @@ def log_validation_results(
     
     # Create visualizations if data is available
     if vis_y_pred is not None and vis_y is not None:
-        create_and_log_visualizations(logger, epoch, step, vis_y_pred, vis_y, save_to_disk)
+        create_and_log_visualizations(
+            logger, 
+            epoch, 
+            step, 
+            vis_y_pred, 
+            vis_y, 
+            save_to_disk,
+            vmin=vmin,
+            vmax=vmax,
+            error_max=error_max,
+            diff_max=diff_max,
+            rmse_max=rmse_max
+        )
 
 def create_and_log_visualizations(
     logger: Logger,
@@ -651,7 +674,8 @@ def create_and_log_visualizations(
     vmin: float = None,
     vmax: float = None,
     error_max: float = None,
-    diff_max: float = None
+    diff_max: float = None,
+    rmse_max: float = None
 ) -> None:
     """Create and log visualizations of model predictions.
     
@@ -666,6 +690,7 @@ def create_and_log_visualizations(
         vmax: Optional maximum value for the colorbar (for consistent scales)
         error_max: Optional maximum error value for error plots (for consistent scales)
         diff_max: Optional maximum difference value for difference plots (for consistent scales)
+        rmse_max: Optional maximum RMSE value for RMSE plots (for consistent scales)
     """
     # Create visualizations for a subset of samples
     for i in range(min(2, vis_output.size(0))):  # Only use first 2 samples
@@ -715,6 +740,22 @@ def create_and_log_visualizations(
         
         logger.log_figure(
             f"val_error/sample_{i}", 
+            fig, 
+            step=step,
+            save_to_disk=save_to_disk
+        )
+        plt.close(fig)
+        
+        # Create spatial RMSE error map
+        fig = create_spatial_rmse_map(
+            vis_output[i:i+1],
+            vis_target_data[i:i+1],
+            epoch=epoch,
+            rmse_max=rmse_max
+        )
+        
+        logger.log_figure(
+            f"val_rmse/sample_{i}", 
             fig, 
             step=step,
             save_to_disk=save_to_disk
