@@ -24,5 +24,8 @@ class RocmProfiler:
     def getUtilization(self, device):
         return rocm_smi.getGpuUse(device)
     
-    def getTemp(self, device, sensor=0):
-        return rocm_smi.getTemp(device, sensor)
+    def getTemp(self, device, sensor=None):
+        if sensor is None:
+            return rocm_smi.findFirstAvailableTemp(device)
+        else:
+            return rocm_smi.getTemp(device, sensor)
