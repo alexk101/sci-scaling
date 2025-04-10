@@ -84,8 +84,8 @@ class MetricsTracker:
         # Initialize specialized metrics tracking based on GPU type
         if self.gpu_type == "amd":
             try:
-                import pyRocmInfo
-                self.rocm_profiler = pyRocmInfo.RocmInfo()
+                import rocm_profiler
+                self.rocm_profiler = rocm_profiler.RocmProfiler()
                 logging.info("Initialized ROCm metrics tracking")
             except ImportError:
                 self.rocm_profiler = None
@@ -153,6 +153,7 @@ class MetricsTracker:
         # Platform-specific metrics
         if self.gpu_type == "nvidia" and hasattr(self, 'nvml_handle') and self.nvml_handle:
             try:
+                import pynvml
                 # Get utilization
                 util = pynvml.nvmlDeviceGetUtilizationRates(self.nvml_handle)
                 metrics["gpu_utilization"] = util.gpu
@@ -168,17 +169,9 @@ class MetricsTracker:
                 logging.warning(f"Warning: Failed to get NVIDIA metrics: {e}")
         
         elif self.gpu_type == "amd" and hasattr(self, 'rocm_profiler') and self.rocm_profiler:
-            try:
-                # For AMD, try to use pyRocmInfo if available
-                metrics["gpu_utilization"] = self.rocm_profiler.get_gpu_utilization()
-                
-                # If advanced pyRocmInfo metrics are available
-                if hasattr(self.rocm_profiler, "get_gpu_temperature"):
-                    metrics["gpu_temperature"] = self.rocm_profiler.get_gpu_temperature()
-                if hasattr(self.rocm_profiler, "get_gpu_power"):
-                    metrics["gpu_power_usage"] = self.rocm_profiler.get_gpu_power()
-            except Exception as e:
-                logging.warning(f"Warning: Failed to get AMD metrics: {e}")
+            metrics["gpu_utilization"] = self.rocm_profiler.getUtilization(0)
+            metrics["gpu_temperature"] = self.rocm_profiler.getTemp(0)
+            metrics["gpu_power_usage"] = self.rocm_profiler.getPower(0)
         
         # For MPS (Apple Silicon), we unfortunately don't have access to detailed metrics
         # through Python APIs yet
@@ -306,7 +299,6 @@ class MetricsTracker:
         # Add platform info as a string - but skip these for numeric logging contexts
         # They can be accessed as properties but shouldn't be logged as metrics
         metrics["system/platform_name"] = self.gpu_type
-        metrics["system/gpu_metrics_available"] = self.gpu_type != "cpu"
 
         # Filter out non-numeric values to prevent logging errors
         filtered_metrics = {}
