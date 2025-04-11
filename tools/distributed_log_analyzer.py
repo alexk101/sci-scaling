@@ -85,6 +85,19 @@ class DistributedLogAnalyzer:
             level_counts[level] = level_counts.get(level, 0) + 1
         return level_counts
     
+    def _group_events_by_content(self):
+        """Group log entries by their message content across all ranks.
+        
+        Returns:
+            Dictionary mapping message content to list of ranks that logged it
+        """
+        events = defaultdict(list)
+        for rank, entries in self.log_data.items():
+            for entry in entries:
+                message = entry['message']
+                events[message].append(rank)
+        return events
+    
     def find_timeline_discrepancies(self, min_gap_seconds=5):
         """Find significant time differences between ranks for the same events.
         
