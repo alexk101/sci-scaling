@@ -450,38 +450,11 @@ def latitude_weighting_factor(
 @torch.jit.script
 def weighted_rmse_channels(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """Compute latitude-weighted RMSE for each channel."""
-    # Get input dimensions
-    batch_size, n_channels, num_lat, width = pred.shape
-    
-    # Generate latitude weights - more memory efficient
+    num_lat = pred.shape[2]
     lat_t = torch.arange(start=0, end=num_lat, device=pred.device)
     s = torch.sum(torch.cos(3.1416 / 180.0 * lat(lat_t, num_lat)))
-    weight_1d = latitude_weighting_factor(lat_t, num_lat, s)
-    
-    # Initialize output tensor
-    result = torch.zeros((batch_size, n_channels), device=pred.device)
-    
-    # Process each channel separately to reduce memory usage
-    for c in range(n_channels):
-        # Compute squared error for this channel
-        squared_error = (pred[:, c] - target[:, c]) ** 2.0
-        
-        # Apply weighting along latitude dimension
-        for b in range(batch_size):
-            # Apply weights to latitude dimension (more memory efficient)
-            weighted_error = torch.zeros_like(squared_error[b])
-            for lat_idx in range(num_lat):
-                weighted_error[lat_idx] = squared_error[b, lat_idx] * weight_1d[lat_idx]
-            
-            # Take mean over spatial dimensions and square root
-            result[b, c] = torch.sqrt(torch.mean(weighted_error))
-            
-            # Free intermediate memory
-            del weighted_error
-        
-        # Free channel memory
-        del squared_error
-        
+    weight = torch.reshape(latitude_weighting_factor(lat_t, num_lat, s), (1, 1, -1, 1))
+    result = torch.sqrt(torch.mean(weight * (pred - target) ** 2.0, dim=(-1, -2)))
     return result
 
 
