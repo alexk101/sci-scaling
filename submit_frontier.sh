@@ -147,7 +147,7 @@ trap 'cleanup_handler' USR1
 source export_frontier_vars.sh
 
 # Location of the conda environment
-export CONDA_ENV_PATH=/lustre/orion/geo163/world-shared/python-envs/deepspeed
+export CONDA_ENV_PATH=/lustre/orion/geo163/world-shared/python-envs/deepspeedv2
 source activate ${CONDA_ENV_PATH}
 
 # Define the path to the DeepSpeed environment file
