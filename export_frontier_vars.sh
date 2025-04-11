@@ -1,5 +1,5 @@
 # Set up ROCm environment
-ROCM_VERSION=6.2.4
+ROCM_VERSION=6.3.1
 LIBFABRIC_VERSION=1.22.0
 
 # Load required modules
@@ -12,7 +12,7 @@ module load cray-hdf5-parallel/1.12.2.11
 module load libfabric/${LIBFABRIC_VERSION}
 
 # Set up RCCL and ROCM for distributed training
-export LD_LIBRARY_PATH=/lustre/orion/geo163/scratch/kiefera/libs/networking/rccl/aws-ofi-rccl/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/lustre/orion/geo163/scratch/kiefera/libs/networking/rccl/aws-ofi-rccl-${ROCM_VERSION}/lib:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/opt/rocm-${ROCM_VERSION}/lib:$LD_LIBRARY_PATH
 export LD_LIBRARY_PATH=/opt/cray/libfabric/${LIBFABRIC_VERSION}/lib64:$LD_LIBRARY_PATH
 
