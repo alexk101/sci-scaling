@@ -531,8 +531,9 @@ def main() -> None:
         print("\nRank Status Summary:")
         # Print ranks in groups of 10 for better readability
         ranks = sorted(last_line_analysis['rank_status'].keys())
-        for i in range(0, len(ranks), 10):
-            group = ranks[i:i+10]
+        columns = 8
+        for i in range(0, len(ranks), columns):
+            group = ranks[i:i+columns]
             status_line = " ".join(f"Rank {rank:2d}: {last_line_analysis['rank_status'][rank]}" for rank in group)
             print(status_line)
         
