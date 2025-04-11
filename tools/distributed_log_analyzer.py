@@ -287,6 +287,46 @@ class DistributedLogAnalyzer:
         
         return pd.DataFrame(issues)
     
+    def analyze_last_lines(self) -> Dict[str, Any]:
+        """Analyze the last line of each log file to find ranks with different messages.
+        
+        Returns:
+            Dictionary containing:
+            - majority_message: The most common last message
+            - different_ranks: List of ranks with different last messages
+        """
+        # Get the last message from each rank
+        last_messages: Dict[int, str] = {}
+        for rank, entries in self.log_data.items():
+            if entries:
+                last_messages[rank] = entries[-1]['message']
+            else:
+                last_messages[rank] = "No log entries found"
+        
+        # Find the most common message
+        message_counts: Dict[str, int] = {}
+        for message in last_messages.values():
+            message_counts[message] = message_counts.get(message, 0) + 1
+        
+        if not message_counts:
+            return {
+                'majority_message': None,
+                'different_ranks': []
+            }
+        
+        majority_message = max(message_counts.items(), key=lambda x: x[1])[0]
+        
+        # Find ranks with different messages
+        different_ranks = [
+            rank for rank, message in last_messages.items()
+            if message != majority_message
+        ]
+        
+        return {
+            'majority_message': majority_message,
+            'different_ranks': different_ranks
+        }
+    
     def analyze_training_progress(self) -> pd.DataFrame:
         """Analyze training progress across ranks.
         
@@ -465,6 +505,14 @@ def main() -> None:
             print(issues)
         else:
             print("No errors or warnings found")
+        
+        print("\nLast Line Analysis:")
+        last_line_analysis = analyzer.analyze_last_lines()
+        print(f"Majority last message: {last_line_analysis['majority_message']}")
+        if last_line_analysis['different_ranks']:
+            print(f"Ranks with different last messages: {sorted(last_line_analysis['different_ranks'])}")
+        else:
+            print("All ranks have the same last message")
         
         if args.plot:
             fig = analyzer.plot_training_durations()
