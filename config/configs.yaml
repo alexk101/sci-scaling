@@ -90,6 +90,7 @@ cuda_optimized: &cuda_optimized
   model:
     <<: *base_model
     # Enable memory optimizations
+    img_size: [64, 128]
     use_flash_attention: true
     use_checkpointing: true
     precision: "bf16-mixed"

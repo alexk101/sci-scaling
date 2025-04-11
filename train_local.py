@@ -107,7 +107,7 @@ def main():
     trainer = WeatherTrainer(
         config=config,
         strategy=strategy,
-        precision=PrecisionType.BF16 if accelerator == "cuda" else PrecisionType.FP32,
+        precision=config.model.precision,
         devices=device_count,
         num_nodes=1,
         logging_backend=LoggingBackend.TENSORBOARD,
