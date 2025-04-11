@@ -6,11 +6,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 from collections import defaultdict
 import json
+from typing import Dict, List, Optional, Union, Any, DefaultDict, Tuple
 
 class DistributedLogAnalyzer:
     """Analyzer for distributed training logs to help debug issues across ranks."""
     
-    def __init__(self, log_dir: str, pattern: str = "rank_*.log"):
+    def __init__(self, log_dir: str, pattern: str = "rank_*.log") -> None:
         """Initialize the log analyzer.
         
         Args:
@@ -24,18 +25,18 @@ class DistributedLogAnalyzer:
         if not self.log_files:
             raise ValueError(f"No log files found in {log_dir} matching pattern {pattern}")
             
-        self.log_data = {}  # Will store parsed log data by rank
-        self.rank_info = {}  # Will store information about each rank
+        self.log_data: Dict[int, List[Dict[str, Any]]] = {}  # Will store parsed log data by rank
+        self.rank_info: Dict[int, Dict[str, Any]] = {}  # Will store information about each rank
         
         self._parse_logs()
     
-    def _parse_logs(self):
+    def _parse_logs(self) -> None:
         """Parse all log files and extract structured information."""
         log_pattern = r'\[(.*?)\]\[Rank (\d+)\] (\w+): (.*)'
         
         for log_file in self.log_files:
             rank = None
-            entries = []
+            entries: List[Dict[str, Any]] = []
             
             with open(log_file, 'r') as f:
                 for line in f:
@@ -65,7 +66,7 @@ class DistributedLogAnalyzer:
                     'entry_count': len(entries)
                 }
     
-    def get_rank_summary(self):
+    def get_rank_summary(self) -> pd.DataFrame:
         """Get a summary of ranks and their log files."""
         summary = []
         for rank, info in sorted(self.rank_info.items()):
@@ -77,42 +78,48 @@ class DistributedLogAnalyzer:
             })
         return pd.DataFrame(summary)
     
-    def _count_log_levels(self, rank):
+    def _count_log_levels(self, rank: int) -> Dict[str, int]:
         """Count occurrences of each log level for a rank."""
-        level_counts = {}
+        level_counts: Dict[str, int] = {}
         for entry in self.log_data[rank]:
             level = entry['level']
             level_counts[level] = level_counts.get(level, 0) + 1
         return level_counts
     
-    def _group_events_by_content(self):
+    def _group_events_by_content(self) -> DefaultDict[str, List[int]]:
         """Group log entries by their message content across all ranks.
         
         Returns:
             Dictionary mapping message content to list of ranks that logged it
         """
-        events = defaultdict(list)
+        events: DefaultDict[str, List[int]] = defaultdict(list)
         for rank, entries in self.log_data.items():
             for entry in entries:
                 message = entry['message']
                 events[message].append(rank)
         return events
     
-    def find_timeline_discrepancies(self, min_gap_seconds=5):
+    def find_timeline_discrepancies(self, min_gap_seconds: int = 5) -> Union[pd.DataFrame, str]:
         """Find significant time differences between ranks for the same events.
         
         Args:
             min_gap_seconds: Minimum time difference to report as a discrepancy
             
         Returns:
-            DataFrame of discrepancies sorted by time difference
+            DataFrame of discrepancies sorted by time difference or message if none found
         """
-        discrepancies = []
+        discrepancies: List[Dict[str, Any]] = []
         
         # Group events by their message content
         for event, ranks in self._group_events_by_content().items():
-            rank_times = {rank: self.log_data[rank]['timestamp'].iloc[0] 
-                         for rank in ranks}
+            # Get the first timestamp for each rank that logged this event
+            rank_times: Dict[int, datetime] = {}
+            for rank in ranks:
+                # Find the first entry with this message in the rank's logs
+                for entry in self.log_data[rank]:
+                    if entry['message'] == event:
+                        rank_times[rank] = entry['timestamp']
+                        break
             
             if len(rank_times) > 1:  # Only check if multiple ranks report the event
                 min_time = min(rank_times.values())
@@ -138,7 +145,7 @@ class DistributedLogAnalyzer:
         df = pd.DataFrame(discrepancies)
         return df.sort_values('time_diff_seconds', ascending=False)
     
-    def search_across_ranks(self, pattern):
+    def search_across_ranks(self, pattern: str) -> pd.DataFrame:
         """Search for a pattern across all rank logs.
         
         Args:
@@ -147,7 +154,7 @@ class DistributedLogAnalyzer:
         Returns:
             DataFrame with search results
         """
-        results = []
+        results: List[Dict[str, Any]] = []
         
         for rank, entries in self.log_data.items():
             for entry in entries:
@@ -163,7 +170,7 @@ class DistributedLogAnalyzer:
         
         return pd.DataFrame(results)
     
-    def find_missing_messages(self, pattern=None):
+    def find_missing_messages(self, pattern: Optional[str] = None) -> Dict[str, Dict[str, List[int]]]:
         """Find messages that are logged by some ranks but missing in others.
         
         Args:
@@ -173,7 +180,7 @@ class DistributedLogAnalyzer:
             Dictionary mapping messages to ranks that logged them
         """
         # Extract messages from each rank
-        rank_messages = defaultdict(set)
+        rank_messages: DefaultDict[int, set] = defaultdict(set)
         
         for rank, entries in self.log_data.items():
             for entry in entries:
@@ -186,18 +193,18 @@ class DistributedLogAnalyzer:
                 rank_messages[rank].add(message)
         
         # Find all unique messages
-        all_messages = set()
+        all_messages: set = set()
         for messages in rank_messages.values():
             all_messages.update(messages)
         
         # Find which ranks logged each message
-        message_to_ranks = {msg: [] for msg in all_messages}
+        message_to_ranks: Dict[str, List[int]] = {msg: [] for msg in all_messages}
         for rank, messages in rank_messages.items():
             for msg in messages:
                 message_to_ranks[msg].append(rank)
         
         # Filter to only include messages not logged by all ranks
-        inconsistent_messages = {}
+        inconsistent_messages: Dict[str, Dict[str, List[int]]] = {}
         for msg, ranks in message_to_ranks.items():
             if len(ranks) < len(self.log_data):
                 inconsistent_messages[msg] = {
@@ -207,7 +214,7 @@ class DistributedLogAnalyzer:
         
         return inconsistent_messages
     
-    def compare_initialization_data(self):
+    def compare_initialization_data(self) -> Dict[str, Dict[str, Any]]:
         """Compare initialization data between ranks to find inconsistencies.
         
         Returns:
@@ -224,7 +231,7 @@ class DistributedLogAnalyzer:
         ]
         
         # Extract initialization data from each rank
-        init_data = defaultdict(dict)
+        init_data: DefaultDict[str, Dict[int, Tuple[Any, ...]]] = defaultdict(dict)
         
         for rank, entries in self.log_data.items():
             for entry in entries:
@@ -239,11 +246,11 @@ class DistributedLogAnalyzer:
                         init_data[key][rank] = values
         
         # Find inconsistencies
-        inconsistencies = {}
+        inconsistencies: Dict[str, Dict[str, List[int]]] = {}
         
         for param, rank_values in init_data.items():
             # Group ranks by their values
-            value_to_ranks = defaultdict(list)
+            value_to_ranks: DefaultDict[Tuple[Any, ...], List[int]] = defaultdict(list)
             for rank, value in rank_values.items():
                 value_tuple = tuple(value)  # Make value hashable
                 value_to_ranks[value_tuple].append(rank)
@@ -259,14 +266,14 @@ class DistributedLogAnalyzer:
             'inconsistencies': inconsistencies
         }
     
-    def find_errors_and_warnings(self):
+    def find_errors_and_warnings(self) -> pd.DataFrame:
         """Extract all errors and warnings from logs.
         
         Returns:
             DataFrame with error and warning information
         """
         error_levels = ['ERROR', 'CRITICAL', 'FATAL', 'WARNING', 'WARN']
-        issues = []
+        issues: List[Dict[str, Any]] = []
         
         for rank, entries in self.log_data.items():
             for entry in entries:
@@ -280,7 +287,7 @@ class DistributedLogAnalyzer:
         
         return pd.DataFrame(issues)
     
-    def analyze_training_progress(self):
+    def analyze_training_progress(self) -> pd.DataFrame:
         """Analyze training progress across ranks.
         
         Looks for epoch start/end messages and extracts timing information.
@@ -292,10 +299,10 @@ class DistributedLogAnalyzer:
         epoch_start_pattern = r'Starting epoch (\d+)/(\d+)'
         epoch_end_pattern = r'Finished epoch (\d+)/(\d+)'
         
-        progress_data = []
+        progress_data: List[Dict[str, Any]] = []
         
         for rank, entries in self.log_data.items():
-            epoch_starts = {}
+            epoch_starts: Dict[int, datetime] = {}
             
             for entry in entries:
                 message = entry['message']
@@ -328,11 +335,11 @@ class DistributedLogAnalyzer:
         
         return pd.DataFrame(progress_data)
     
-    def plot_training_durations(self):
+    def plot_training_durations(self) -> Optional[plt.Figure]:
         """Plot training durations per epoch across ranks.
         
         Returns:
-            Matplotlib figure with the plot
+            Matplotlib figure with the plot or None if no data
         """
         progress_df = self.analyze_training_progress()
         
@@ -356,7 +363,7 @@ class DistributedLogAnalyzer:
         
         return fig
     
-    def generate_report(self, output_file=None):
+    def generate_report(self, output_file: Optional[str] = None) -> str:
         """Generate a comprehensive report of log analysis.
         
         Args:
@@ -366,7 +373,7 @@ class DistributedLogAnalyzer:
             HTML string with the report
         """
         # Create a report using pandas styling
-        sections = []
+        sections: List[str] = []
         
         # 1. Basic summary
         sections.append("<h2>Rank Summary</h2>")
@@ -375,7 +382,7 @@ class DistributedLogAnalyzer:
         # 2. Timeline discrepancies
         sections.append("<h2>Timeline Discrepancies</h2>")
         discrepancies = self.find_timeline_discrepancies()
-        if not discrepancies.empty:
+        if not isinstance(discrepancies, str):
             sections.append(discrepancies.to_html())
         else:
             sections.append("<p>No significant timeline discrepancies found.</p>")
@@ -414,7 +421,7 @@ class DistributedLogAnalyzer:
         
         return report
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Analyze distributed training logs')
     parser.add_argument('log_dir', help='Directory containing rank log files')
@@ -427,7 +434,7 @@ def parse_args():
                         help='Generate and display plots')
     return parser.parse_args()
 
-def main():
+def main() -> None:
     """Main entry point."""
     args = parse_args()
     
