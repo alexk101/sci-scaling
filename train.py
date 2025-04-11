@@ -2,9 +2,9 @@ import os
 import torch
 import torch.optim as optim
 import argparse
-from torch.utils.data import DataLoader
 from dataclasses import asdict
 from lightning.fabric import Fabric
+from lightning.fabric.strategies import FSDPStrategy
 from typing import Optional, Union
 from tqdm.contrib.logging import tqdm_logging_redirect
 from pathlib import Path
@@ -12,6 +12,7 @@ import logging
 import shutil
 import signal
 import numpy as np
+import gc  # For garbage collection
 
 # Global flag to indicate if we should terminate due to SLURM signal
 received_term_signal = False
@@ -43,7 +44,7 @@ matplotlib.use('Agg')
 from models.weather_transformer import WeatherTransformer, FLASH_ATTN_AVAILABLE
 from utils.data_loader import WeatherDataset, get_data_loader
 from utils.loss import l2_loss_opt
-from utils.metrics import MetricsTracker, compute_metrics
+from utils.metrics import MetricsTracker, compute_metrics, weighted_rmse_channels
 from utils.logging import (
     Logger, 
     init_run_directory, 
@@ -189,6 +190,90 @@ class WeatherTrainer:
         self.model = WeatherTransformer(**model_params)
         self.metrics = MetricsTracker(self.model)
         
+        # Ensure devices is properly set - it can't be None for Fabric
+        # Default to using the number of local GPUs if not explicitly set
+        if self.devices is None:
+            if torch.cuda.is_available():
+                self.devices = torch.cuda.device_count()
+            else:
+                self.devices = 1  # Default to 1 CPU if no GPUs available
+        
+        logging.info(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
+        
+        # Configure strategy with FSDP optimizations if using FSDP
+        if 'fsdp' in str(self.strategy).lower() and not isinstance(self.strategy, FSDPStrategy):
+            try:
+                # Create FSDPStrategy with optimized parameters
+                from torch.distributed.fsdp import FullyShardedDataParallel, CPUOffload, ShardingStrategy
+                from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+                import functools
+                
+                logging.info("Configuring Lightning Fabric FSDP strategy with memory optimizations")
+                
+                # Define auto-wrap policy based on parameter count
+                min_params = 1e5  # Wrap layers with more than 100K parameters
+                auto_wrap_policy = functools.partial(
+                    size_based_auto_wrap_policy, min_num_params=min_params
+                )
+                
+                # Configure activation checkpointing for transformer blocks
+                activation_checkpointing_policy = None
+                if hasattr(self.model, 'blocks'):
+                    from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+                    from torch.nn.modules.transformer import TransformerEncoderLayer
+                    
+                    # Use native transformer blocks for checkpointing if available
+                    if hasattr(self.model.blocks[0], '__class__'):
+                        activation_checkpointing_policy = {self.model.blocks[0].__class__}
+                        logging.info(f"Using activation checkpointing for {self.model.blocks[0].__class__.__name__}")
+                
+                # Create FSDP strategy with memory optimizations
+                self.strategy = FSDPStrategy(
+                    auto_wrap_policy=auto_wrap_policy,
+                    activation_checkpointing_policy=activation_checkpointing_policy,
+                    cpu_offload=CPUOffload(offload_params=True) if self.config.model.use_checkpointing else None,
+                    sharding_strategy=ShardingStrategy.FULL_SHARD,
+                    state_dict_type="full"  # Save full state dict for easier checkpoint handling
+                )
+                
+                logging.info("Successfully configured FSDP strategy with memory optimizations")
+            
+            except ImportError as e:
+                logging.warning(f"Could not configure FSDP strategy: {e}")
+                logging.warning("Will use default FSDP settings")
+        
+        # Set up fabric with the configured strategy
+        self.fabric = Fabric(
+            strategy=self.strategy,
+            precision=self.precision,
+            devices=self.devices,
+            num_nodes=self.num_nodes,
+            loggers=None  # We'll set up our own logger
+        )
+        
+        # Launch fabric before setting up model
+        self.fabric.launch()
+        logging.info(f"Fabric launched successfully")
+        
+        # Now that Fabric is initialized and distributed environment is set up, create the logger
+        self.metrics_logger = Logger(
+            run_dir=Path(self.config.training.log_dir),  # Use the run directory directly from config
+            config=self.config,
+            backend=self.logging_backend,
+            project_name=self.config.training.wandb_project if self.config.training.use_wandb else "weather-transformer"
+        )
+        
+        logging.info(f"Logger created")
+        # Determine if we're using distributed training
+        using_distributed = (
+            self.strategy == "deepspeed" or
+            self.strategy == "ddp" or
+            (isinstance(self.strategy, str) and "ddp" in self.strategy) or
+            isinstance(self.strategy, FSDPStrategy)
+        )
+        
+        logging.info(f"Using distributed: {using_distributed}")
+        
         # Set up optimizer with gradient clipping
         self.optimizer = optim.AdamW(
             self.model.parameters(),
@@ -229,47 +314,7 @@ class WeatherTrainer:
             stds_path=self.config.training.stds_path,
             train=False
         )
-
         
-        # Ensure devices is properly set - it can't be None for Fabric
-        # Default to using the number of local GPUs if not explicitly set
-        if self.devices is None:
-            if torch.cuda.is_available():
-                self.devices = torch.cuda.device_count()
-            else:
-                self.devices = 1  # Default to 1 CPU if no GPUs available
-        
-        logging.info(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
-        # Set up fabric with memory optimization
-        self.fabric = Fabric(
-            strategy=self.strategy,
-            precision=self.precision,
-            devices=self.devices,
-            num_nodes=self.num_nodes,
-            loggers=None  # We'll set up our own logger
-        )
-        
-        # Launch fabric before setting up model
-        self.fabric.launch()
-        logging.info(f"Fabric launched successfully")
-        
-        # Now that Fabric is initialized and distributed environment is set up, create the logger
-        self.metrics_logger = Logger(
-            run_dir=Path(self.config.training.log_dir),  # Use the run directory directly from config
-            config=self.config,
-            backend=self.logging_backend,
-            project_name=self.config.training.wandb_project if self.config.training.use_wandb else "weather-transformer"
-        )
-        
-        logging.info(f"Logger created")
-        # Determine if we're using distributed training
-        using_distributed = (
-            self.strategy == "deepspeed" or
-            self.strategy == "ddp" or
-            (isinstance(self.strategy, str) and "ddp" in self.strategy)
-        )
-        
-        logging.info(f"Using distributed: {using_distributed}")
         logging.info(f'Initializing training data loader')
         # Set up data loaders with appropriate sampling for distributed training - AFTER Fabric is launched
         self.train_loader, self.train_sampler = get_data_loader(
@@ -286,7 +331,7 @@ class WeatherTrainer:
         logging.info(f'Initializing validation data loader')
         self.val_loader, self.val_sampler = get_data_loader(
             dataset=val_dataset,
-            batch_size=self.config.training.batch_size,
+            batch_size=self.config.training.batch_size // 4,  # Use smaller batch size for validation
             num_workers=self.config.training.num_workers,
             distributed=using_distributed,
             train=False,
@@ -509,16 +554,21 @@ class WeatherTrainer:
                     
                 # Unpack the batch tuple
                 input_data, target_data = batch
-                    
-                # Forward pass
-                output = self.model(input_data)
-                loss = l2_loss_opt(output, target_data)
-                    
-                # Backward pass
+                
+                # Zero gradients before forward pass
                 self.optimizer.zero_grad()
+                
+                # Forward pass with Fabric's autocast for automatic precision handling
+                with self.fabric.autocast():
+                    output = self.model(input_data)
+                    loss = l2_loss_opt(output, target_data)
+                
+                # Use native fabric backward pass with memory optimizations for FSDP
                 self.fabric.backward(loss)
+                
+                # Step the optimizer
                 self.optimizer.step()
-                    
+                
                 # Update metrics
                 train_loss.update(loss.item())
                 
@@ -569,66 +619,120 @@ class WeatherTrainer:
     
     def _validate_epoch(self, epoch):
         """
-        Validate the model on the validation set.
+        Validate the model on the validation set using memory-efficient technique
+        from the SC24 example with running sums.
         
         Args:
             epoch: Current epoch number
             
         Returns:
-            val_loss: Validation loss
-            val_metrics: Validation metrics dictionary
+            Tuple of (validation loss, validation metrics)
         """
         # Set model to evaluation mode
         self.model.eval()
         
-        # Initialize validation loss tracker
-        val_loss = AverageMeter()
+        if self.fabric.is_global_zero:
+            logging.info("Starting validation...")
+            log_memory_usage("Validation Start")
         
-        # Reset metrics for this epoch
-        self.metrics.reset()
+        # Initialize accumulators with zero tensors on the device
+        # These values will be accumulated directly on the device
+        device = next(self.model.parameters()).device
+        val_loss = torch.zeros(1, device=device)
+        val_mse = torch.zeros(1, device=device)
+        val_mae = torch.zeros(1, device=device)
+        val_rmse = torch.zeros(1, device=device)
+        num_samples = 0
         
-        # Create visualization collectors
-        vis_output = None
-        vis_target = None
-        max_vis_samples = 4
+        # Create weighted RMSE accumulator with shape [output_channels]
+        weighted_rmse_sum = torch.zeros(self.config.model.output_channels, device=device)
         
         # Validation loop
         with torch.no_grad():
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
-                # Forward pass
-                outputs = self.model(inputs)
+                batch_size = inputs.size(0)
                 
-                # Calculate loss
-                loss = l2_loss_opt(outputs, targets)
-                val_loss.update(loss.item())
+                # Log first few batches for diagnostics
+                if batch_idx < 3 and self.fabric.is_global_zero:
+                    logging.info(f"Validation batch {batch_idx}: shape={inputs.shape}, device={inputs.device}")
                 
-                # Update metrics tracker
-                self.metrics.update(outputs, targets)
-                
-                # Store first batch for visualization
-                if batch_idx == 0:
-                    # Update visualization scales
-                    self._update_visualization_scales(outputs, targets)
+                # Use Fabric's autocast for correct precision handling
+                with self.fabric.autocast():
+                    outputs = self.model(inputs)
+                    # Compute metrics for this batch
+                    loss = l2_loss_opt(outputs, targets)
                     
-                    # Store samples for visualization (limited to max_vis_samples)
-                    vis_output = outputs[:max_vis_samples].cpu()
-                    vis_target = targets[:max_vis_samples].cpu()
+                    # Compute MSE, MAE directly 
+                    mse = torch.mean((outputs - targets) ** 2)
+                    mae = torch.mean(torch.abs(outputs - targets))
+                    
+                    # Compute weighted RMSE
+                    w_rmse = weighted_rmse_channels(outputs, targets)
+                
+                # Accumulate metrics weighted by batch size
+                val_loss += loss * batch_size
+                val_mse += mse * batch_size
+                val_mae += mae * batch_size
+                weighted_rmse_sum += w_rmse.sum(dim=0)  # Sum across batch
+                num_samples += batch_size
+                
+                # Free memory immediately
+                del inputs, targets, outputs, loss, mse, mae, w_rmse
+                
+                # Force garbage collection every few batches
+                if batch_idx % 5 == 0:
+                    torch.cuda.empty_cache()
+                    gc.collect()
         
-        # Get metrics
-        val_metrics = self.metrics.compute()
+        # Average the accumulated metrics
+        if num_samples > 0:
+            val_loss = val_loss / num_samples
+            val_mse = val_mse / num_samples
+            val_mae = val_mae / num_samples
+            val_rmse = torch.sqrt(val_mse)
+            weighted_rmse_avg = weighted_rmse_sum / num_samples
+        
+        # Collect all results
+        metrics = {
+            "loss": val_loss.item(),
+            "mse": val_mse.item(),
+            "mae": val_mae.item(),
+            "rmse": val_rmse.item(),
+            "weighted_rmse": torch.mean(weighted_rmse_avg).item()
+        }
+        
+        # Add per-channel weighted RMSE if needed
+        for i in range(len(weighted_rmse_avg)):
+            metrics[f"weighted_rmse_ch{i}"] = weighted_rmse_avg[i].item()
+        
+        # Handle distributed validation - average metrics across all processes
+        if self.fabric.world_size > 1:
+            # Create a tensor to hold all metrics for reduction
+            metric_names = list(metrics.keys())
+            metric_values = torch.tensor([metrics[name] for name in metric_names], device=device)
+            
+            # All-reduce to average across processes
+            torch.distributed.all_reduce(metric_values, op=torch.distributed.ReduceOp.SUM)
+            metric_values = metric_values / self.fabric.world_size
+            
+            # Update metrics dictionary with reduced values
+            for i, name in enumerate(metric_names):
+                metrics[name] = metric_values[i].item()
         
         # Log results
-        self._log_validation_summary(epoch, val_loss.avg, val_metrics)
-        self._log_validation_metrics(epoch, epoch * len(self.train_loader), val_loss.avg, val_metrics)
+        self._log_validation_summary(epoch, metrics["loss"], metrics)
+        self._log_validation_metrics(epoch, epoch * len(self.train_loader), metrics["loss"], metrics)
         
-        # Create visualizations
-        if vis_output is not None:
-            self._create_and_log_visualizations(epoch, epoch * len(self.train_loader), vis_output, vis_target)
+        # No visualization to conserve memory
+        
+        # Log final memory usage
+        if self.fabric.is_global_zero:
+            log_memory_usage("Validation End")
         
         # Set model back to training mode
         self.model.train()
         
-        return val_loss.avg, val_metrics
+        return metrics["loss"], metrics
     
     def _update_visualization_scales(self, outputs, targets):
         """
@@ -668,12 +772,14 @@ class WeatherTrainer:
         
         Args:
             epoch: Current epoch number
-            val_loss: AverageMeter with validation loss
-            val_metrics: Dictionary of AverageMeters with various metrics
+            val_loss: Validation loss value
+            val_metrics: Dictionary of metrics
         """
         logging.info(f"Validation: Epoch {epoch+1}, Loss: {val_loss:.6f}")
-        for k, v in val_metrics.items():
-            logging.info(f"Validation: {k}={v:.6f}")
+        # Log only the main metrics to avoid cluttering the console
+        for k in ["mse", "mae", "rmse", "weighted_rmse"]:
+            if k in val_metrics:
+                logging.info(f"Validation: {k}={val_metrics[k]:.6f}")
     
     def _log_validation_metrics(self, epoch, step, val_loss, val_metrics):
         """
@@ -682,18 +788,15 @@ class WeatherTrainer:
         Args:
             epoch: Current epoch number
             step: Current step number
-            val_loss: AverageMeter with validation loss
-            val_metrics: Dictionary of AverageMeters with various metrics
+            val_loss: Validation loss
+            val_metrics: Dictionary of metrics
         """
-        # Convert AverageMeters to plain values
-        metrics_dict = {k: v for k, v in val_metrics.items()}
-        
         # Use the function from utils.logging
         log_validation_results(
             logger=self.metrics_logger,
             epoch=epoch,
             val_loss=val_loss,
-            val_metrics=metrics_dict,
+            val_metrics=val_metrics,
             step=step,
             learning_rate=self.optimizer.param_groups[0]['lr']
         )
@@ -970,14 +1073,19 @@ def main():
     config.training.log_dir = str(run_dir)
     
     # Handle devices parameter properly
-    devices = 8
+    devices = args.devices or (
+        torch.cuda.device_count() if torch.cuda.is_available() else 1
+    )
     if rank == 0:
         logging.info(f"Using {devices} devices per node")
     
-    # Initialize trainer with proper devices setting
+    # Configure strategy based on args
+    strategy = args.strategy or config.training.strategy
+    
+    # Initialize trainer with proper settings
     trainer = WeatherTrainer(
         config=config,
-        strategy=args.strategy or config.training.strategy,
+        strategy=strategy,
         precision=args.precision or config.training.precision,
         devices=devices,
         num_nodes=args.num_nodes or config.training.num_nodes if hasattr(config.training, 'num_nodes') else 1,
@@ -999,6 +1107,18 @@ def main():
         # Log any uncaught exceptions
         logging.error(f"Error during training: {str(e)}", exc_info=True)
         raise
+
+def log_memory_usage(prefix="Memory"):
+    """Log memory usage information for debugging."""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024 ** 3)  # GB
+        reserved = torch.cuda.memory_reserved() / (1024 ** 3)    # GB
+        max_allocated = torch.cuda.max_memory_allocated() / (1024 ** 3)  # GB
+        
+        logging.info(f"{prefix} Usage: Allocated={allocated:.2f}GB, Reserved={reserved:.2f}GB, Max={max_allocated:.2f}GB")
+        
+        # Reset peak stats
+        torch.cuda.reset_peak_memory_stats()
 
 if __name__ == "__main__":
     main() 

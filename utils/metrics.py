@@ -376,6 +376,34 @@ class MetricsTracker:
             # Record resource metrics if needed
             self.record_resource_metrics()
 
+    def update_raw(self, output: torch.Tensor, target: torch.Tensor):
+        """
+        Memory-efficient version of update that computes metrics directly
+        without storing intermediate tensors or converting to numpy.
+        
+        Args:
+            output: Model predictions tensor [batch, channels, height, width]
+            target: Ground truth tensor [batch, channels, height, width]
+        """
+        with torch.no_grad():
+            # Compute basic metrics directly with torch operations
+            mse = torch.mean((output - target) ** 2).item()
+            mae = torch.mean(torch.abs(output - target)).item()
+            rmse = torch.sqrt(torch.tensor(mse)).item()
+            
+            # For weighted metrics specific to climate data
+            w_rmse = weighted_rmse(output, target).item()
+            
+            # Record metrics directly
+            self.model_metrics["mse"].append(mse)
+            self.model_metrics["mae"].append(mae)
+            self.model_metrics["rmse"].append(rmse)
+            self.model_metrics["weighted_rmse"].append(w_rmse)
+            
+            # We skip r2 and explained_variance as they require numpy conversion
+            
+            # No resource metrics to avoid overhead
+
 
 def compute_metrics(output: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
     """Compute basic metrics for a batch."""
