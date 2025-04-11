@@ -86,37 +86,24 @@ class DistributedLogAnalyzer:
         return level_counts
     
     def find_timeline_discrepancies(self, min_gap_seconds=5):
-        """Find major timeline discrepancies between ranks.
+        """Find significant time differences between ranks for the same events.
         
         Args:
-            min_gap_seconds: Minimum gap in seconds to report as a discrepancy
+            min_gap_seconds: Minimum time difference to report as a discrepancy
             
         Returns:
-            DataFrame with discrepancy information
+            DataFrame of discrepancies sorted by time difference
         """
-        # Extract key events and their timestamps for each rank
-        key_events = defaultdict(dict)
-        
-        for rank, entries in self.log_data.items():
-            for entry in entries:
-                # Skip non-datetime timestamps
-                if not isinstance(entry['timestamp'], datetime):
-                    continue
-                    
-                # Store the timestamp for this message and rank
-                message = entry['message']
-                key_events[message][rank] = entry['timestamp']
-        
-        # Find events that have significant timing differences
         discrepancies = []
         
-        for event, rank_times in key_events.items():
-            if len(rank_times) > 1:  # Only consider events logged by multiple ranks
-                timestamps = list(rank_times.values())
-                min_time = min(timestamps)
-                max_time = max(timestamps)
-                
-                # Calculate time difference in seconds
+        # Group events by their message content
+        for event, ranks in self._group_events_by_content().items():
+            rank_times = {rank: self.log_data[rank]['timestamp'].iloc[0] 
+                         for rank in ranks}
+            
+            if len(rank_times) > 1:  # Only check if multiple ranks report the event
+                min_time = min(rank_times.values())
+                max_time = max(rank_times.values())
                 time_diff = (max_time - min_time).total_seconds()
                 
                 if time_diff >= min_gap_seconds:
@@ -132,7 +119,11 @@ class DistributedLogAnalyzer:
                         'total_ranks': len(self.log_data)
                     })
         
-        return pd.DataFrame(discrepancies).sort_values('time_diff_seconds', ascending=False)
+        if not discrepancies:
+            return "No timeline discrepancies found"
+            
+        df = pd.DataFrame(discrepancies)
+        return df.sort_values('time_diff_seconds', ascending=False)
     
     def search_across_ranks(self, pattern):
         """Search for a pattern across all rank logs.
