@@ -1,15 +1,11 @@
 import argparse
 import re
-import os
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
-import numpy as np
 from collections import defaultdict
-from typing import Dict, List, Tuple, Set, Optional
 import json
-import difflib
 
 class DistributedLogAnalyzer:
     """Analyzer for distributed training logs to help debug issues across ranks."""
