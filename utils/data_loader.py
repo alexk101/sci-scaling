@@ -180,7 +180,8 @@ class WeatherDataset(Dataset):
         if len(self.files) > 0:
             self._load_file(0)
 
-        logging.info(f"Initialized dataset with {self.total_samples} samples")
+        loader_type = "training" if self.train else "validation"
+        logging.info(f"Initialized {loader_type} dataset with {self.total_samples} samples")
 
     def _normalize(self, data: torch.Tensor) -> torch.Tensor:
         """Normalize the data using pre-computed means and standard deviations."""

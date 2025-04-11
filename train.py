@@ -634,32 +634,115 @@ class WeatherTrainer:
         val_rmse = torch.zeros(self.config.model.output_channels, dtype=torch.float32, device=device)
         valid_steps = 0
         
+        # Explicitly empty the cache before validation loop
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Determine if we should use input chunking based on image size
+        img_size_h, img_size_w = self.config.model.img_size
+        use_chunking = (img_size_h * img_size_w) > 100000  # For large images like 360x720
+        chunk_size = 4 if use_chunking else 0  # Number of samples to process at once
+        
+        if use_chunking and self.fabric.is_global_zero:
+            logging.info(f"Using chunked processing for large images ({img_size_h}x{img_size_w})")
+        
         # Validation loop following SC24 implementation pattern
         with torch.inference_mode():
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
-                # Log diagnostic info
-                if batch_idx % 10 == 0 and self.fabric.is_global_zero:
+                # Log memory before processing batch
+                if self.fabric.is_global_zero:
                     logging.info(f"Validating batch {batch_idx}, steps: {valid_steps}")
+                    log_memory_usage(f"Before batch {batch_idx}")
+                    logging.info(f"Input shape: {inputs.shape}, Target shape: {targets.shape}, "
+                                f"Input device: {inputs.device}, Target device: {targets.device}")
                 
-                # Forward pass with autocast for precision handling
-                with self.fabric.autocast():
-                    outputs = self.model(inputs)
-                    loss = l2_loss_opt(outputs, targets)
-                    # Calculate weighted RMSE directly (matches SC24 pattern)
-                    rmse = weighted_rmse_channels(outputs, targets)
-                
-                # Simple accumulation (not weighted by batch size) - following SC24
-                val_loss += loss
-                val_rmse += rmse.sum(dim=0)  # Sum across batch dimension
-                valid_steps += 1
-                
-                # Free memory immediately
-                del inputs, targets, outputs, loss, rmse
-                
-                # Occasional garbage collection
-                if batch_idx % 5 == 0:
-                    torch.cuda.empty_cache()
-                    gc.collect()
+                try:
+                    batch_loss = 0.0
+                    batch_rmse = torch.zeros(self.config.model.output_channels, dtype=torch.float32, device=device)
+                    
+                    # Process in chunks if needed
+                    if use_chunking and inputs.size(0) > chunk_size:
+                        num_chunks = (inputs.size(0) + chunk_size - 1) // chunk_size
+                        
+                        if self.fabric.is_global_zero and batch_idx == 0:
+                            logging.info(f"Processing batch in {num_chunks} chunks of size {chunk_size}")
+                        
+                        for chunk_idx in range(num_chunks):
+                            start_idx = chunk_idx * chunk_size
+                            end_idx = min(start_idx + chunk_size, inputs.size(0))
+                            
+                            # Get chunk data
+                            inputs_chunk = inputs[start_idx:end_idx]
+                            targets_chunk = targets[start_idx:end_idx]
+                            
+                            # Forward pass with autocast
+                            with self.fabric.autocast():
+                                outputs_chunk = self.model(inputs_chunk)
+                                loss_chunk = l2_loss_opt(outputs_chunk, targets_chunk)
+                                rmse_chunk = weighted_rmse_channels(outputs_chunk, targets_chunk)
+                            
+                            # Accumulate metrics for this chunk
+                            batch_loss += loss_chunk.item() * (end_idx - start_idx)
+                            batch_rmse += rmse_chunk.sum(dim=0)
+                            
+                            # Log chunk metrics
+                            if self.fabric.is_global_zero and batch_idx == 0:
+                                log_memory_usage(f"After chunk {chunk_idx}/{num_chunks}")
+                            
+                            # Free memory immediately
+                            del inputs_chunk, targets_chunk, outputs_chunk, loss_chunk, rmse_chunk
+                            torch.cuda.empty_cache()
+                        
+                        # Average loss over the batch
+                        batch_loss = torch.tensor(batch_loss / inputs.size(0), device=device)
+                        
+                    else:
+                        # Process entire batch at once (for smaller images or batches)
+                        with self.fabric.autocast():
+                            if self.fabric.is_global_zero and batch_idx == 0:
+                                log_memory_usage(f"Before model forward pass")
+                            
+                            outputs = self.model(inputs)
+                            
+                            if self.fabric.is_global_zero and batch_idx == 0:
+                                log_memory_usage(f"After model forward pass")
+                                logging.info(f"Output shape: {outputs.shape}, Output device: {outputs.device}")
+                            
+                            # Calculate loss and metrics
+                            batch_loss = l2_loss_opt(outputs, targets)
+                            batch_rmse = weighted_rmse_channels(outputs, targets).sum(dim=0)
+                            
+                            if self.fabric.is_global_zero and batch_idx == 0:
+                                log_memory_usage(f"After metrics calculation")
+                            
+                            # Free memory
+                            del outputs
+                    
+                    # Simple accumulation (not weighted by batch size) - following SC24
+                    val_loss += batch_loss
+                    val_rmse += batch_rmse
+                    valid_steps += 1
+                    
+                    # Free memory immediately
+                    del inputs, targets, batch_loss, batch_rmse
+                    
+                    # Aggressive garbage collection after every batch in the first few batches
+                    if batch_idx < 5:
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        if self.fabric.is_global_zero:
+                            log_memory_usage(f"After cleanup (aggressive)")
+                    elif batch_idx % 5 == 0:
+                        torch.cuda.empty_cache()
+                        gc.collect()
+                        if self.fabric.is_global_zero and batch_idx % 20 == 0:
+                            log_memory_usage(f"After cleanup (regular)")
+                            
+                except Exception as e:
+                    if self.fabric.is_global_zero:
+                        logging.error(f"Error during validation batch {batch_idx}: {str(e)}")
+                        log_memory_usage(f"At exception")
+                    raise
         
         # Final memory cleanup
         torch.cuda.empty_cache()
