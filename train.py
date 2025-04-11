@@ -472,14 +472,8 @@ class WeatherTrainer:
                 self.save_checkpoint(epoch)
                 return
                 
-            # Training phase
             train_loss = self._train_epoch(epoch)
-            
-            # Log epoch summary
             logging.info(f"Finished epoch {epoch+1}, Avg Loss: {train_loss.avg:.6f}")
-            
-            # Validation phase
-            logging.info(f"Starting validation")
             self._validate_epoch(epoch)
             
             # Save checkpoint if needed
@@ -619,8 +613,7 @@ class WeatherTrainer:
     
     def _validate_epoch(self, epoch):
         """
-        Validate the model on the validation set using memory-efficient technique
-        from the SC24 example with running sums.
+        Validate the model on the validation set following the approach in SC24.
         
         Args:
             epoch: Current epoch number
@@ -635,75 +628,57 @@ class WeatherTrainer:
             logging.info("Starting validation...")
             log_memory_usage("Validation Start")
         
-        # Initialize accumulators with zero tensors on the device
-        # These values will be accumulated directly on the device
+        # Initialize accumulators with zero tensors on the device (following SC24 approach)
         device = next(self.model.parameters()).device
         val_loss = torch.zeros(1, device=device)
-        val_mse = torch.zeros(1, device=device)
-        val_mae = torch.zeros(1, device=device)
-        val_rmse = torch.zeros(1, device=device)
-        num_samples = 0
+        val_rmse = torch.zeros(self.config.model.output_channels, dtype=torch.float32, device=device)
+        valid_steps = 0
         
-        # Create weighted RMSE accumulator with shape [output_channels]
-        weighted_rmse_sum = torch.zeros(self.config.model.output_channels, device=device)
-        
-        # Validation loop
-        with torch.no_grad():
+        # Validation loop following SC24 implementation pattern
+        with torch.inference_mode():
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
-                batch_size = inputs.size(0)
+                # Log diagnostic info
+                if batch_idx % 10 == 0 and self.fabric.is_global_zero:
+                    logging.info(f"Validating batch {batch_idx}, steps: {valid_steps}")
                 
-                # Log first few batches for diagnostics
-                if batch_idx < 3 and self.fabric.is_global_zero:
-                    logging.info(f"Validation batch {batch_idx}: shape={inputs.shape}, device={inputs.device}")
-                
-                # Use Fabric's autocast for correct precision handling
+                # Forward pass with autocast for precision handling
                 with self.fabric.autocast():
                     outputs = self.model(inputs)
-                    # Compute metrics for this batch
                     loss = l2_loss_opt(outputs, targets)
-                    
-                    # Compute MSE, MAE directly 
-                    mse = torch.mean((outputs - targets) ** 2)
-                    mae = torch.mean(torch.abs(outputs - targets))
-                    
-                    # Compute weighted RMSE
-                    w_rmse = weighted_rmse_channels(outputs, targets)
+                    # Calculate weighted RMSE directly (matches SC24 pattern)
+                    rmse = weighted_rmse_channels(outputs, targets)
                 
-                # Accumulate metrics weighted by batch size
-                val_loss += loss * batch_size
-                val_mse += mse * batch_size
-                val_mae += mae * batch_size
-                weighted_rmse_sum += w_rmse.sum(dim=0)  # Sum across batch
-                num_samples += batch_size
+                # Simple accumulation (not weighted by batch size) - following SC24
+                val_loss += loss
+                val_rmse += rmse.sum(dim=0)  # Sum across batch dimension
+                valid_steps += 1
                 
                 # Free memory immediately
-                del inputs, targets, outputs, loss, mse, mae, w_rmse
+                del inputs, targets, outputs, loss, rmse
                 
-                # Force garbage collection every few batches
+                # Occasional garbage collection
                 if batch_idx % 5 == 0:
                     torch.cuda.empty_cache()
                     gc.collect()
         
-        # Average the accumulated metrics
-        if num_samples > 0:
-            val_loss = val_loss / num_samples
-            val_mse = val_mse / num_samples
-            val_mae = val_mae / num_samples
-            val_rmse = torch.sqrt(val_mse)
-            weighted_rmse_avg = weighted_rmse_sum / num_samples
+        # Final memory cleanup
+        torch.cuda.empty_cache()
+        gc.collect()
         
-        # Collect all results
+        # Average the accumulated metrics by step count (exactly as SC24 does)
+        if valid_steps > 0:
+            val_loss = val_loss / valid_steps
+            val_rmse = val_rmse / valid_steps
+        
+        # Create metrics dictionary
         metrics = {
             "loss": val_loss.item(),
-            "mse": val_mse.item(),
-            "mae": val_mae.item(),
-            "rmse": val_rmse.item(),
-            "weighted_rmse": torch.mean(weighted_rmse_avg).item()
+            "weighted_rmse": torch.mean(val_rmse).item()
         }
         
-        # Add per-channel weighted RMSE if needed
-        for i in range(len(weighted_rmse_avg)):
-            metrics[f"weighted_rmse_ch{i}"] = weighted_rmse_avg[i].item()
+        # Add per-channel weighted RMSE
+        for i in range(len(val_rmse)):
+            metrics[f"weighted_rmse_ch{i}"] = val_rmse[i].item()
         
         # Handle distributed validation - average metrics across all processes
         if self.fabric.world_size > 1:
@@ -722,8 +697,6 @@ class WeatherTrainer:
         # Log results
         self._log_validation_summary(epoch, metrics["loss"], metrics)
         self._log_validation_metrics(epoch, epoch * len(self.train_loader), metrics["loss"], metrics)
-        
-        # No visualization to conserve memory
         
         # Log final memory usage
         if self.fabric.is_global_zero:
