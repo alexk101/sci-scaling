@@ -563,20 +563,21 @@ class WeatherTrainer:
                 # Step the optimizer
                 self.optimizer.step()
                 
+                loss = loss.detach().item()
                 # Update metrics
-                train_loss.update(loss.item())
+                train_loss.update(loss)
                 
                 # Update progress bar with current loss
                 if should_display_pbar:
-                    pbar.set_postfix(loss=f"{loss.item():.6f}")
+                    pbar.set_postfix(loss=f"{loss:.6f}")
                 
                 # Periodically log batch info to avoid flooding the log
                 if batch_idx % 10 == 0:
-                    logging.info(f"Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss.item():.6f}")
+                    logging.info(f"Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss:.6f}")
                 
                 # Log metrics
                 if self.fabric.is_global_zero:
-                    self._log_training_metrics(epoch, batch_idx, loss.item())
+                    self._log_training_metrics(epoch, batch_idx, loss)
         
         # Log epoch completion (will be seen by all ranks)
         logging.info(f"Completed epoch {epoch+1}/{self.config.training.epochs} with avg loss: {train_loss.avg:.6f}")
