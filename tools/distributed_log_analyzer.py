@@ -293,7 +293,8 @@ class DistributedLogAnalyzer:
         Returns:
             Dictionary containing:
             - majority_message: The most common last message
-            - different_ranks: List of ranks with different last messages
+            - minority_messages: Dictionary mapping non-majority messages to their ranks
+            - rank_status: Dictionary mapping ranks to their status (✓ or ✗)
         """
         # Get the last message from each rank
         last_messages: Dict[int, str] = {}
@@ -311,20 +312,30 @@ class DistributedLogAnalyzer:
         if not message_counts:
             return {
                 'majority_message': None,
-                'different_ranks': []
+                'minority_messages': {},
+                'rank_status': {}
             }
         
         majority_message = max(message_counts.items(), key=lambda x: x[1])[0]
         
-        # Find ranks with different messages
-        different_ranks = [
-            rank for rank, message in last_messages.items()
-            if message != majority_message
-        ]
+        # Find all unique messages that aren't part of the majority
+        minority_messages: Dict[str, List[int]] = {}
+        for rank, message in last_messages.items():
+            if message != majority_message:
+                if message not in minority_messages:
+                    minority_messages[message] = []
+                minority_messages[message].append(rank)
+        
+        # Create rank status dictionary
+        rank_status: Dict[int, str] = {
+            rank: '✓' if message == majority_message else '✗'
+            for rank, message in last_messages.items()
+        }
         
         return {
             'majority_message': majority_message,
-            'different_ranks': different_ranks
+            'minority_messages': minority_messages,
+            'rank_status': rank_status
         }
     
     def analyze_training_progress(self) -> pd.DataFrame:
@@ -509,10 +520,21 @@ def main() -> None:
         print("\nLast Line Analysis:")
         last_line_analysis = analyzer.analyze_last_lines()
         print(f"Majority last message: {last_line_analysis['majority_message']}")
-        if last_line_analysis['different_ranks']:
-            print(f"Ranks with different last messages: {sorted(last_line_analysis['different_ranks'])}")
+        
+        if last_line_analysis['minority_messages']:
+            print("\nMinority messages and their ranks:")
+            for message, ranks in last_line_analysis['minority_messages'].items():
+                print(f"{message}: {', '.join(map(str, ranks))}")
         else:
-            print("All ranks have the same last message")
+            print("\nAll ranks have the same last message")
+        
+        print("\nRank Status Summary:")
+        # Print ranks in groups of 10 for better readability
+        ranks = sorted(last_line_analysis['rank_status'].keys())
+        for i in range(0, len(ranks), 10):
+            group = ranks[i:i+10]
+            status_line = " ".join(f"Rank {rank:2d}: {last_line_analysis['rank_status'][rank]}" for rank in group)
+            print(status_line)
         
         if args.plot:
             fig = analyzer.plot_training_durations()
