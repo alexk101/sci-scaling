@@ -377,7 +377,7 @@ class WeatherTrainer:
         logging.info(f'Initializing validation data loader')
         self.val_loader, self.val_sampler = get_data_loader(
             dataset=val_dataset,
-            batch_size=self.config.training.batch_size // 4,  # Use smaller batch size for validation
+            batch_size=self.config.training.batch_size,  # Use smaller batch size for validation
             num_workers=self.config.training.num_workers,
             distributed=using_distributed,
             train=False,
@@ -546,11 +546,21 @@ class WeatherTrainer:
             if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
                 export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_post_train_{self.run_id}"))
             
+            # Run garbage collection to prevent memory leaks between epochs
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             self._validate_epoch(epoch)
             
             # Save memory snapshot after validation
             if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
                 export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_post_validation_{self.run_id}"))
+            
+            # Run garbage collection after validation to prevent memory accumulation
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             # Save checkpoint if needed
             # Note: all ranks should call save_checkpoint to ensure proper synchronization
@@ -580,6 +590,16 @@ class WeatherTrainer:
         if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
             export_memory_snapshot(str(self.profiler_dir / f"final_state_{self.run_id}"))
             stop_record_memory_history()
+            
+        # Final cleanup to avoid memory leaks when process continues
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            # Reset peak memory stats to clean state
+            torch.cuda.reset_peak_memory_stats()
+            logging.info("Final GPU memory cleanup completed")
+            
+        # Force garbage collection
+        gc.collect()
             
         logging.info(f"Training completed")
     
@@ -685,26 +705,38 @@ class WeatherTrainer:
                     if should_profile_batch:
                         export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_post_optimizer_{self.run_id}"))
                 
-                loss = loss.detach().item()
+                # Detach loss to prevent memory leaks from computational graph
+                loss_value = loss.detach().item()
+                del loss  # Explicitly delete the loss tensor to free memory
+                
                 # Update metrics
-                train_loss.update(loss)
+                train_loss.update(loss_value)
                 
                 # Update progress bar with current loss
                 if should_display_pbar:
-                    pbar.set_postfix(loss=f"{loss:.6f}")
+                    pbar.set_postfix(loss=f"{loss_value:.6f}")
                 
                 # Periodically log batch info to avoid flooding the log
                 if batch_idx % 10 == 0:
-                    logging.info(f"Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss:.6f}")
+                    logging.info(f"Epoch {epoch+1}, Batch {batch_idx}, Loss: {loss_value:.6f}")
+                    
+                    # Perform periodic memory cleanup during training
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                 
                 # Log metrics
                 if self.fabric.is_global_zero:
-                    self._log_training_metrics(epoch, batch_idx, loss)
+                    self._log_training_metrics(epoch, batch_idx, loss_value)
                 
                 # Take a snapshot after occasional batches to track memory usage over time
                 if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
                     # Take snapshots at logarithmically spaced intervals
                     export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_end_{self.run_id}"))
+        
+        # Perform garbage collection at the end of each epoch to prevent memory buildup
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Ensure all ranks are synchronized after profiling is complete
         self.fabric.barrier()
@@ -789,6 +821,13 @@ class WeatherTrainer:
                 val_loss += batch_loss
                 val_rmse += batch_rmse
                 valid_steps += 1
+                
+                # Free memory after each batch to prevent validation memory buildup
+                del outputs, batch_loss, batch_rmse
+                # Also free the input and target tensors
+                del inputs, targets
+                if batch_idx % 10 == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
         # Average metrics
         if valid_steps > 0:
@@ -1029,6 +1068,12 @@ class WeatherTrainer:
             # Wait for all ranks to finish saving
             self.fabric.barrier()
             self.convert_to_universal_checkpoint(checkpoint_path)
+            
+        # Force clean up checkpoint memory to prevent leaks
+        del checkpoint
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
             
         # Remove old checkpoints if needed
         if self.max_checkpoints > 0 and self.fabric.is_global_zero:

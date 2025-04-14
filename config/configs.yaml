@@ -111,6 +111,7 @@ mps_optimized: &mps_optimized
     <<: *base_model
     # MPS works best with 32-bit precision
     precision: "32-true"
+    img_size: [64, 128]
   
   training:
     <<: *base_training
