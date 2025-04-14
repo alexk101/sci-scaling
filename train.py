@@ -13,9 +13,49 @@ import shutil
 import signal
 import numpy as np
 import gc  # For garbage collection
+import socket
+from datetime import datetime
 
 # Global flag to indicate if we should terminate due to SLURM signal
 received_term_signal = False
+
+# Keep a max of 100,000 alloc/free events in the recorded history
+MAX_NUM_OF_MEM_EVENTS_PER_SNAPSHOT: int = 100000
+
+def start_record_memory_history() -> None:
+    if not torch.cuda.is_available():
+        logging.info("CUDA unavailable. Not recording memory history")
+        return
+
+    logging.info("Starting snapshot record_memory_history")
+    torch.cuda.memory._record_memory_history(
+        max_entries=MAX_NUM_OF_MEM_EVENTS_PER_SNAPSHOT
+    )
+
+def stop_record_memory_history() -> None:
+    if not torch.cuda.is_available():
+        logging.info("CUDA unavailable. Not recording memory history")
+        return
+
+    logging.info("Stopping snapshot record_memory_history")
+    torch.cuda.memory._record_memory_history(enabled=None)
+
+def export_memory_snapshot(prefix: str) -> None:
+    if not torch.cuda.is_available():
+        logging.info("CUDA unavailable. Not exporting memory snapshot")
+        return
+
+    try:
+        logging.info(f"Saving snapshot to local file: {prefix}.pickle")
+        torch.cuda.memory._dump_snapshot(f"{prefix}.pickle")
+    except Exception as e:
+        logging.error(f"Failed to capture memory snapshot {e}")
+        return
+
+def trace_handler(prof: torch.profiler.profile, prefix: str):
+    # Export both Chrome trace and memory timeline
+    prof.export_chrome_trace(f"{prefix}.json.gz")
+    prof.export_memory_timeline(f"{prefix}.html", device="cuda:0")
 
 # Signal handler for graceful termination
 def handle_termination_signal(signum, frame):
@@ -359,6 +399,8 @@ class WeatherTrainer:
         # Initialize FLOPs profiler if enabled
         if self.enable_flops_profiler and FLOPS_PROFILER_AVAILABLE:
             self.flops_profiler = FlopsProfiler(self.model)
+
+        (Path(self.config.training.log_dir)/'profiler').mkdir(parents=True, exist_ok=True)
     
     def load_checkpoint(self, checkpoint_path):
         """
@@ -533,6 +575,29 @@ class WeatherTrainer:
         # Only show progress bar on rank 0, but redirect logging for all ranks
         should_display_pbar = self.fabric.is_global_zero
         
+        # Start recording memory history
+        if self.fabric.is_global_zero:
+            start_record_memory_history()
+        
+        # Initialize profiler
+        if self.fabric.is_global_zero:
+            host_name = socket.gethostname()
+            timestamp = datetime.now().strftime("%b_%d_%H_%M_%S")
+            file_prefix = f"{self.config.training.log_dir}/profiler/{host_name}_{timestamp}"
+            
+            prof = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                schedule=torch.profiler.schedule(wait=0, warmup=0, active=6, repeat=1),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True,
+                on_trace_ready=lambda p: trace_handler(p, file_prefix),
+            )
+            prof.start()
+        
         # Use tqdm_logging_redirect which combines tqdm with logging redirection
         with tqdm_logging_redirect(
             self.train_loader,
@@ -554,14 +619,17 @@ class WeatherTrainer:
                 
                 # Forward pass with Fabric's autocast for automatic precision handling
                 with self.fabric.autocast():
-                    output = self.model(input_data)
-                    loss = l2_loss_opt(output, target_data)
+                    with torch.profiler.record_function("## forward ##"):
+                        output = self.model(input_data)
+                        loss = l2_loss_opt(output, target_data)
                 
                 # Use native fabric backward pass with memory optimizations for FSDP
-                self.fabric.backward(loss)
+                with torch.profiler.record_function("## backward ##"):
+                    self.fabric.backward(loss)
                 
                 # Step the optimizer
-                self.optimizer.step()
+                with torch.profiler.record_function("## optimizer ##"):
+                    self.optimizer.step()
                 
                 loss = loss.detach().item()
                 # Update metrics
@@ -578,6 +646,16 @@ class WeatherTrainer:
                 # Log metrics
                 if self.fabric.is_global_zero:
                     self._log_training_metrics(epoch, batch_idx, loss)
+                    prof.step()
+        
+        # Stop profiling and memory recording
+        if self.fabric.is_global_zero:
+            prof.stop()
+            export_memory_snapshot(f"{self.config.training.log_dir}/profiler/memory_snapshot_epoch_{epoch}")
+            stop_record_memory_history()
+        
+        # Ensure all ranks are synchronized after profiling is complete
+        self.fabric.barrier()
         
         # Log epoch completion (will be seen by all ranks)
         logging.info(f"Completed epoch {epoch+1}/{self.config.training.epochs} with avg loss: {train_loss.avg:.6f}")
@@ -614,7 +692,7 @@ class WeatherTrainer:
     
     def _validate_epoch(self, epoch):
         """
-        Validate the model on the validation set following the approach in SC24.
+        Validate the model on the validation set.
         
         Args:
             epoch: Current epoch number
@@ -625,80 +703,27 @@ class WeatherTrainer:
         # Set model to evaluation mode
         self.model.eval()
         
-        if self.fabric.is_global_zero:
-            logging.info("Starting validation...")
-            log_memory_usage("Validation Start")
-        
-        # Initialize accumulators with zero tensors on the device (following SC24 approach)
+        # Initialize accumulators
         device = next(self.model.parameters()).device
         val_loss = torch.zeros(1, device=device)
         val_rmse = torch.zeros(self.config.model.output_channels, dtype=torch.float32, device=device)
         valid_steps = 0
         
-        # Explicitly empty the cache before validation loop
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        # Validation loop following SC24 implementation pattern
+        # Validation loop
         with torch.inference_mode():
             for batch_idx, (inputs, targets) in enumerate(self.val_loader):
-                # Log memory before processing batch
-                if self.fabric.is_global_zero:
-                    logging.info(f"Validating batch {batch_idx}, steps: {valid_steps}")
-                    log_memory_usage(f"Before batch {batch_idx}")
-                    logging.info(f"Input shape: {inputs.shape}, Target shape: {targets.shape}, "
-                                f"Input device: {inputs.device}, Target device: {targets.device}")
-                
-                batch_loss = 0.0
-                batch_rmse = torch.zeros(self.config.model.output_channels, dtype=torch.float32, device=device)
-                
-                # Process entire batch at once (for smaller images or batches)
+                # Forward pass
                 with self.fabric.autocast():
-                    if self.fabric.is_global_zero and batch_idx == 0:
-                        log_memory_usage(f"Before model forward pass")
-                    
                     outputs = self.model(inputs)
-                    
-                    if self.fabric.is_global_zero and batch_idx == 0:
-                        log_memory_usage(f"After model forward pass")
-                        logging.info(f"Output shape: {outputs.shape}, Output device: {outputs.device}")
-                    
-                    # Calculate loss and metrics
                     batch_loss = l2_loss_opt(outputs, targets)
                     batch_rmse = weighted_rmse_channels(outputs, targets).sum(dim=0)
-                    
-                    if self.fabric.is_global_zero and batch_idx == 0:
-                        log_memory_usage(f"After metrics calculation")
-                    
-                    # Free memory
-                    del outputs
                 
-                # Simple accumulation (not weighted by batch size) - following SC24
+                # Accumulate metrics
                 val_loss += batch_loss
                 val_rmse += batch_rmse
                 valid_steps += 1
-                
-                # Free memory immediately
-                del inputs, targets, batch_loss, batch_rmse
-                
-                # Aggressive garbage collection after every batch in the first few batches
-                if batch_idx < 5:
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    if self.fabric.is_global_zero:
-                        log_memory_usage(f"After cleanup (aggressive)")
-                elif batch_idx % 5 == 0:
-                    torch.cuda.empty_cache()
-                    gc.collect()
-                    if self.fabric.is_global_zero and batch_idx % 20 == 0:
-                        log_memory_usage(f"After cleanup (regular)")
-                            
         
-        # Final memory cleanup
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        # Average the accumulated metrics by step count (exactly as SC24 does)
+        # Average metrics
         if valid_steps > 0:
             val_loss = val_loss / valid_steps
             val_rmse = val_rmse / valid_steps
@@ -713,27 +738,18 @@ class WeatherTrainer:
         for i in range(len(val_rmse)):
             metrics[f"weighted_rmse_ch{i}"] = val_rmse[i].item()
         
-        # Handle distributed validation - average metrics across all processes
+        # Handle distributed validation
         if self.fabric.world_size > 1:
-            # Create a tensor to hold all metrics for reduction
             metric_names = list(metrics.keys())
             metric_values = torch.tensor([metrics[name] for name in metric_names], device=device)
-            
-            # All-reduce to average across processes
             torch.distributed.all_reduce(metric_values, op=torch.distributed.ReduceOp.SUM)
             metric_values = metric_values / self.fabric.world_size
-            
-            # Update metrics dictionary with reduced values
             for i, name in enumerate(metric_names):
                 metrics[name] = metric_values[i].item()
         
         # Log results
         self._log_validation_summary(epoch, metrics["loss"], metrics)
         self._log_validation_metrics(epoch, epoch * len(self.train_loader), metrics["loss"], metrics)
-        
-        # Log final memory usage
-        if self.fabric.is_global_zero:
-            log_memory_usage("Validation End")
         
         # Set model back to training mode
         self.model.train()
