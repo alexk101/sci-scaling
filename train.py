@@ -409,13 +409,6 @@ class WeatherTrainer:
         # Create profiler directory
         self.profiler_dir = Path(self.config.training.log_dir) / 'profiler'
         self.profiler_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Start memory profiling if enabled
-        if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-            logging.info(f"Memory profiling is enabled. Snapshots will be saved to {self.profiler_dir}")
-            # Take a snapshot of initial memory state
-            start_record_memory_history()
-            export_memory_snapshot(str(self.profiler_dir / f"initial_state_{self.run_id}"))
     
     def load_checkpoint(self, checkpoint_path):
         """
@@ -520,6 +513,12 @@ class WeatherTrainer:
         start_epoch = 0
         if hasattr(self.config.training, 'start_epoch'):
             start_epoch = self.config.training.start_epoch
+            
+        # Start memory profiling if enabled
+        if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
+            logging.info(f"Memory profiling is enabled. Snapshots will be saved to {self.profiler_dir}")
+            start_record_memory_history()
+            export_memory_snapshot(str(self.profiler_dir / f"training_start_{self.run_id}"))
         
         # Training loop
         for epoch in range(start_epoch, self.config.training.epochs):
@@ -530,21 +529,21 @@ class WeatherTrainer:
                 
                 # Save memory snapshot on termination if profiling is enabled
                 if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-                    export_memory_snapshot(str(self.profiler_dir / f"termination_epoch{epoch}_{self.run_id}"))
+                    export_memory_snapshot(str(self.profiler_dir / f"termination_{self.run_id}"))
                     stop_record_memory_history()
                 
                 return
-                
-            # Save memory snapshot at the beginning of selected epochs
+            
+            # Memory snapshot at epoch start    
             if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
                 export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_start_{self.run_id}"))
                 
             train_loss = self._train_epoch(epoch)
             logging.info(f"Finished epoch {epoch+1}, Avg Loss: {train_loss.avg:.6f}")
             
-            # Save memory snapshot after training epoch
+            # Memory snapshot after training
             if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-                export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_post_train_{self.run_id}"))
+                export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_training_end_{self.run_id}"))
             
             # Run garbage collection to prevent memory leaks between epochs
             gc.collect()
@@ -553,11 +552,7 @@ class WeatherTrainer:
             
             self._validate_epoch(epoch)
             
-            # Save memory snapshot after validation
-            if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-                export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_post_validation_{self.run_id}"))
-            
-            # Run garbage collection after validation to prevent memory accumulation
+            # Memory cleanup after validation
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -569,14 +564,14 @@ class WeatherTrainer:
                 if self.fabric.is_global_zero:
                     logging.info(f"Saving checkpoint at epoch {epoch+1} (save_every={self.config.training.save_every})")
                 self.save_checkpoint(epoch + 1)
-            
+                
             # Check for termination signal after each epoch
             if received_term_signal:
                 logging.warning("Detected termination signal after completing epoch. Exiting.")
                 
                 # Save memory snapshot on termination if profiling is enabled
                 if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-                    export_memory_snapshot(str(self.profiler_dir / f"termination_epoch{epoch}_{self.run_id}"))
+                    export_memory_snapshot(str(self.profiler_dir / f"termination_{self.run_id}"))
                     stop_record_memory_history()
                     
                 return
@@ -588,7 +583,7 @@ class WeatherTrainer:
         
         # Save final memory snapshot and stop recording
         if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-            export_memory_snapshot(str(self.profiler_dir / f"final_state_{self.run_id}"))
+            export_memory_snapshot(str(self.profiler_dir / f"training_end_{self.run_id}"))
             stop_record_memory_history()
             
         # Final cleanup to avoid memory leaks when process continues
@@ -653,13 +648,9 @@ class WeatherTrainer:
                                    f"Will finish current epoch and save checkpoint.")
                     break
                 
-                # Capture memory states at specific points during training 
-                # (only first epoch, first batch and specific check points)
-                should_profile_batch = (
-                    self.enable_memory_profiler and 
-                    torch.cuda.is_available() and 
-                    self.fabric.is_global_zero
-                )
+                # Simplified memory profiling - no per-batch snapshots
+                # We'll only keep the memory profiling flag for epoch-level snapshots
+                should_profile_batch = False
                 
                 # Unpack the batch tuple
                 input_data, target_data = batch
@@ -670,40 +661,19 @@ class WeatherTrainer:
                 # Forward pass with Fabric's autocast for automatic precision handling
                 with self.fabric.autocast():
                     with torch.profiler.record_function("## forward ##"):
-                        # Take a snapshot before forward pass if profiling is enabled
-                        if should_profile_batch:
-                            export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_pre_forward_{self.run_id}"))
-                        
+                        # Remove per-batch memory snapshots
                         output = self.model(input_data)
                         loss = l2_loss_opt(output, target_data)
-                        
-                        # Take a snapshot after forward pass if profiling is enabled
-                        if should_profile_batch:
-                            export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_post_forward_{self.run_id}"))
                 
                 # Use native fabric backward pass with memory optimizations for FSDP
                 with torch.profiler.record_function("## backward ##"):
-                    # Take a snapshot before backward pass if profiling is enabled
-                    if should_profile_batch:
-                        export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_pre_backward_{self.run_id}"))
-                    
+                    # Remove per-batch memory snapshots
                     self.fabric.backward(loss)
-                    
-                    # Take a snapshot after backward pass if profiling is enabled
-                    if should_profile_batch:
-                        export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_post_backward_{self.run_id}"))
                 
                 # Step the optimizer
                 with torch.profiler.record_function("## optimizer ##"):
-                    # Take a snapshot before optimizer step if profiling is enabled
-                    if should_profile_batch:
-                        export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_pre_optimizer_{self.run_id}"))
-                    
+                    # Remove per-batch memory snapshots
                     self.optimizer.step()
-                    
-                    # Take a snapshot after optimizer step if profiling is enabled
-                    if should_profile_batch:
-                        export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_post_optimizer_{self.run_id}"))
                 
                 # Detach loss to prevent memory leaks from computational graph
                 loss_value = loss.detach().item()
@@ -727,17 +697,12 @@ class WeatherTrainer:
                 # Log metrics
                 if self.fabric.is_global_zero:
                     self._log_training_metrics(epoch, batch_idx, loss_value)
-                
-                # Take a snapshot after occasional batches to track memory usage over time
-                if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
-                    # Take snapshots at logarithmically spaced intervals
-                    export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_batch{batch_idx}_end_{self.run_id}"))
         
         # Perform garbage collection at the end of each epoch to prevent memory buildup
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        
+            
         # Ensure all ranks are synchronized after profiling is complete
         self.fabric.barrier()
         
@@ -856,6 +821,10 @@ class WeatherTrainer:
         # Log results
         self._log_validation_summary(epoch, metrics["loss"], metrics)
         self._log_validation_metrics(epoch, epoch * len(self.train_loader), metrics["loss"], metrics)
+        
+        # Capture memory state at the end of validation
+        if self.enable_memory_profiler and torch.cuda.is_available() and self.fabric.is_global_zero:
+            export_memory_snapshot(str(self.profiler_dir / f"epoch{epoch}_validation_end_{self.run_id}"))
         
         # Set model back to training mode
         self.model.train()
