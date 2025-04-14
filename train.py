@@ -15,7 +15,6 @@ import numpy as np
 import gc  # For garbage collection
 import socket
 from datetime import datetime
-from lightning.fabric.utilities import apply_to_collection
 
 # Global flag to indicate if we should terminate due to SLURM signal
 received_term_signal = False
@@ -576,29 +575,6 @@ class WeatherTrainer:
         # Only show progress bar on rank 0, but redirect logging for all ranks
         should_display_pbar = self.fabric.is_global_zero
         
-        # Start recording memory history
-        if self.fabric.is_global_zero:
-            start_record_memory_history()
-        
-        # Initialize profiler
-        if self.fabric.is_global_zero:
-            host_name = socket.gethostname()
-            timestamp = datetime.now().strftime("%b_%d_%H_%M_%S")
-            file_prefix = f"{self.config.training.log_dir}/profiler/{host_name}_{timestamp}"
-            
-            prof = torch.profiler.profile(
-                activities=[
-                    torch.profiler.ProfilerActivity.CPU,
-                    torch.profiler.ProfilerActivity.CUDA,
-                ],
-                schedule=torch.profiler.schedule(wait=0, warmup=0, active=6, repeat=1),
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=True,
-                on_trace_ready=lambda p: trace_handler(p, file_prefix),
-            )
-            prof.start()
-        
         # Use tqdm_logging_redirect which combines tqdm with logging redirection
         with tqdm_logging_redirect(
             self.train_loader,
@@ -647,13 +623,6 @@ class WeatherTrainer:
                 # Log metrics
                 if self.fabric.is_global_zero:
                     self._log_training_metrics(epoch, batch_idx, loss)
-                    prof.step()
-        
-        # Stop profiling and memory recording
-        if self.fabric.is_global_zero:
-            prof.stop()
-            export_memory_snapshot(f"{self.config.training.log_dir}/profiler/memory_snapshot_epoch_{epoch}")
-            stop_record_memory_history()
         
         # Ensure all ranks are synchronized after profiling is complete
         self.fabric.barrier()
@@ -720,7 +689,13 @@ class WeatherTrainer:
                     batch_rmse = weighted_rmse_channels(outputs, targets).sum(dim=0)
                 
                 # Detach tensors to avoid gradients in stored values (prevents potential OOM)
-                outputs = apply_to_collection(outputs, torch.Tensor, lambda x: x.detach())
+                if isinstance(outputs, torch.Tensor):
+                    outputs = outputs.detach()
+                elif isinstance(outputs, dict):
+                    outputs = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in outputs.items()}
+                elif isinstance(outputs, (list, tuple)):
+                    outputs = [x.detach() if isinstance(x, torch.Tensor) else x for x in outputs]
+                
                 batch_loss = batch_loss.detach()
                 batch_rmse = batch_rmse.detach()
                 
