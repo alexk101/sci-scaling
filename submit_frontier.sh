@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:8
 #SBATCH --ntasks-per-node=8  # 8 tasks per node for 8 MI250X GPUs
 #SBATCH --cpus-per-task=7
-#SBATCH --signal=B:USR1@60  # Send signal 10 minutes before time limit
+#SBATCH --signal=B:USR1@180  # Send signal 10 minutes before time limit
 #SBATCH -o %x-%j.out
 
 # =============================================================================
