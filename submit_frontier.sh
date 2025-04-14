@@ -25,6 +25,7 @@
 #   --devices <num>        : Number of devices per node (default: 8)
 #   --num_nodes <num>      : Number of nodes (default: from SLURM)
 #   --enable_flops         : Enable FLOPS profiler
+#   --enable_memory_profiler : Enable memory profiler for detailed memory usage analysis
 #   --flops_budget <budget>: Set FLOPs budget for training (e.g., 1e20)
 #   --time_budget <hours>  : Set time budget in hours (e.g., 5.5)
 # =============================================================================
@@ -37,6 +38,7 @@ STRATEGY="deepspeed"
 DEVICES=8
 NUM_NODES=1  # Default to 1 node
 ENABLE_FLOPS=false
+ENABLE_MEMORY_PROFILER=false
 FLOPS_BUDGET=""
 TIME_BUDGET=""
 
@@ -52,6 +54,7 @@ show_help() {
     echo "  --devices <num>        : Number of devices per node (default: 8)"
     echo "  --num_nodes <num>      : Number of nodes (default: from SLURM)"
     echo "  --enable_flops         : Enable FLOPS profiler"
+    echo "  --enable_memory_profiler : Enable memory profiler for detailed memory usage analysis"
     echo "  --flops_budget <budget>: Set FLOPs budget for training (e.g., 1e20)"
     echo "  --time_budget <hours>  : Set time budget in hours (e.g., 5.5)"
     echo "  --help                 : Show this help message"
@@ -87,6 +90,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable_flops)
             ENABLE_FLOPS=true
+            shift
+            ;;
+        --enable_memory_profiler)
+            ENABLE_MEMORY_PROFILER=true
             shift
             ;;
         --flops_budget)
@@ -183,6 +190,7 @@ echo "Devices per Node: $DEVICES"
 echo "Precision: $PRECISION"
 echo "Strategy: $STRATEGY"
 echo "FLOPS Profiler: $ENABLE_FLOPS"
+echo "Memory Profiler: $ENABLE_MEMORY_PROFILER"
 echo "DeepSpeed Config: $DS_CONFIG"
 echo "Timestamp: $TIMESTAMP"
 echo "======================"
@@ -218,6 +226,11 @@ CMD="srun --export=ALL \
 # Add FLOPS profiler if enabled
 if [[ "$ENABLE_FLOPS" == true ]]; then
     CMD="${CMD%\'} --enable_flops_profiler'"
+fi
+
+# Add memory profiler if enabled
+if [[ "$ENABLE_MEMORY_PROFILER" == true ]]; then
+    CMD="${CMD%\'} --enable_memory_profiler'"
 fi
 
 # Add FLOPS budget if provided
