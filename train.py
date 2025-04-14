@@ -15,6 +15,7 @@ import numpy as np
 import gc  # For garbage collection
 import socket
 from datetime import datetime
+from lightning.fabric.utilities import apply_to_collection
 
 # Global flag to indicate if we should terminate due to SLURM signal
 received_term_signal = False
@@ -717,6 +718,11 @@ class WeatherTrainer:
                     outputs = self.model(inputs)
                     batch_loss = l2_loss_opt(outputs, targets)
                     batch_rmse = weighted_rmse_channels(outputs, targets).sum(dim=0)
+                
+                # Detach tensors to avoid gradients in stored values (prevents potential OOM)
+                outputs = apply_to_collection(outputs, torch.Tensor, lambda x: x.detach())
+                batch_loss = batch_loss.detach()
+                batch_rmse = batch_rmse.detach()
                 
                 # Accumulate metrics
                 val_loss += batch_loss
